@@ -1,0 +1,24 @@
+[package]
+name = "qwen-sumcheck"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "qwen-sumcheck"
+required-features = ["prover"]
+
+[dependencies]
+ark-ff = { version = "0.5", default-features = false, features = ["std"] }
+ark-bn254 = { version = "0.5", default-features = false, features = ["std", "curve"] }
+ark-poly = { version = "0.5", default-features = false, features = ["std"] }
+ark-poly-commit = { version = "0.5", default-features = false, features = ["std"] }
+ark-crypto-primitives = { version = "0.5", default-features = false, features = ["std", "merkle_tree", "sponge", "crh"] }
+ark-std = { version = "0.5", default-features = false, features = ["std"] }
+ark-serialize = { version = "0.5", default-features = false, features = ["std", "derive"] }
+blake3 = { version = "1", default-features = false }
+qwen-common = { path = "../common", optional = true }
+serde_json = { version = "1", optional = true }
+rayon = { version = "1", optional = true }
+
+[features]
+prover = ["dep:qwen-common", "dep:serde_json", "dep:rayon", "ark-poly-commit/parallel", "blake3/std"]

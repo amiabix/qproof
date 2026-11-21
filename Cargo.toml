@@ -1,0 +1,10 @@
+[workspace]
+members = ["common", "guest", "host", "elf", "sumcheck", "sumcheck-guest", "elf-verify"]
+resolver = "2"
+
+[workspace.dependencies]
+ziskos = { git = "https://github.com/amiabix/zisk", rev = "8566a014b9f6b08c5da34bb7408f2d48eac3bb67" }
+zisk-sdk = { git = "https://github.com/amiabix/zisk", rev = "8566a014b9f6b08c5da34bb7408f2d48eac3bb67" }
+
+[profile.release]
+opt-level = 3

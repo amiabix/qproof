@@ -1,0 +1,13 @@
+[package]
+name = "qwen-guest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ziskos = { workspace = true }
+qwen-common = { path = "../common" }
+
+[features]
+default = ["floatdot"]
+floatdot = ["qwen-common/floatdot"]
+dotf8 = ["qwen-common/dotf8"]

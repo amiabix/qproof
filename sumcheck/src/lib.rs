@@ -15,11 +15,21 @@ use ark_std::rand::Rng;
 
 pub type CrhResult<T> = std::result::Result<T, ark_crypto_primitives::Error>;
 
-// Blake3 for the column hashes, the Merkle tree and the transcript.
+// SHA-256 for the column hashes, the Merkle tree and the transcript.
 
-pub struct Blake3;
+pub fn sha256(bytes: &[u8]) -> [u8; 32] {
+    #[cfg(feature = "zisk")]
+    return ziskos::zisklib::sha256(bytes);
+    #[cfg(not(feature = "zisk"))]
+    {
+        use sha2::Digest;
+        sha2::Sha256::digest(bytes).into()
+    }
+}
 
-impl TwoToOneCRHScheme for Blake3 {
+pub struct Sha256;
+
+impl TwoToOneCRHScheme for Sha256 {
     type Input = [u8];
     type Output = Vec<u8>;
     type Parameters = ();
@@ -27,10 +37,7 @@ impl TwoToOneCRHScheme for Blake3 {
         Ok(())
     }
     fn evaluate<T: Borrow<[u8]>>(_: &(), l: T, r: T) -> CrhResult<Vec<u8>> {
-        let mut h = blake3::Hasher::new();
-        h.update(l.borrow());
-        h.update(r.borrow());
-        Ok(h.finalize().as_bytes().to_vec())
+        Ok(sha256(&[l.borrow(), r.borrow()].concat()).to_vec())
     }
     fn compress<T: Borrow<Vec<u8>>>(p: &(), l: T, r: T) -> CrhResult<Vec<u8>> {
         <Self as TwoToOneCRHScheme>::evaluate(p, l.borrow().as_slice(), r.borrow().as_slice())
@@ -52,7 +59,6 @@ impl CRHScheme for Identity {
     }
 }
 
-/// Hashes a column of field elements with Blake3.
 pub struct ColHash;
 
 impl CRHScheme for ColHash {
@@ -63,11 +69,12 @@ impl CRHScheme for ColHash {
         Ok(())
     }
     fn evaluate<T: Borrow<Vec<Fr>>>(_: &(), input: T) -> CrhResult<Vec<u8>> {
-        let mut h = blake3::Hasher::new();
-        for f in input.borrow() {
-            h.update(&f.into_bigint().to_bytes_le());
-        }
-        Ok(h.finalize().as_bytes().to_vec())
+        let bytes: Vec<u8> = input
+            .borrow()
+            .iter()
+            .flat_map(|f| f.into_bigint().to_bytes_le())
+            .collect();
+        Ok(sha256(&bytes).to_vec())
     }
 }
 
@@ -79,30 +86,35 @@ impl Config for Mt {
     type LeafInnerDigestConverter = ByteDigestConverter<Vec<u8>>;
     type InnerDigest = Vec<u8>;
     type LeafHash = Identity;
-    type TwoToOneHash = Blake3;
+    type TwoToOneHash = Sha256;
 }
 
 pub type Poly = DenseMultilinearExtension<Fr>;
 pub type Pcs = LinearCodePCS<MultilinearLigero<Fr, Mt, Poly, ColHash>, Fr, Poly, Mt, ColHash>;
 pub type Com = LabeledCommitment<<Pcs as PolynomialCommitment<Fr, Poly>>::Commitment>;
 
-/// A Blake3 Fiat-Shamir transcript.
+/// A SHA-256 Fiat-Shamir transcript. Holds the state the last squeeze left,
+/// followed by the bytes absorbed since.
 #[derive(Clone)]
-pub struct Transcript(blake3::Hasher);
+pub struct Transcript(Vec<u8>);
 
 impl CryptographicSponge for Transcript {
     type Config = ();
     fn new(_: &()) -> Self {
-        Transcript(blake3::Hasher::new())
+        Transcript(Vec::new())
     }
     fn absorb(&mut self, input: &impl Absorb) {
-        self.0.update(&input.to_sponge_bytes_as_vec());
+        self.0.extend(input.to_sponge_bytes_as_vec());
     }
+    /// Output block `i` is `sha256(h || i as u32 LE)`, where `h` is the digest
+    /// of the state. The new state is `h || "squeeze" || output`.
     fn squeeze_bytes(&mut self, n: usize) -> Vec<u8> {
-        let mut out = vec![0u8; n];
-        self.0.finalize_xof().fill(&mut out);
-        self.0.update(b"squeeze");
-        self.0.update(&out);
+        let h = sha256(&self.0);
+        let mut out: Vec<u8> = (0..n.div_ceil(32) as u32)
+            .flat_map(|i| sha256(&[&h[..], &i.to_le_bytes()].concat()))
+            .collect();
+        out.truncate(n);
+        self.0 = [&h[..], b"squeeze", &out].concat();
         out
     }
     fn squeeze_bits(&mut self, n: usize) -> Vec<bool> {
@@ -154,6 +166,67 @@ pub fn absorb_public(t: &mut Transcript, com: &Com, xs: &[Vec<Fr>], ys: &[Vec<Fr
     for v in xs.iter().chain(ys) {
         t.absorb(v);
     }
+}
+
+fn pow2(k: u32) -> Fr {
+    Fr::from(2u64).pow([k as u64])
+}
+
+/// An f32 as `(±mantissa, exponent)` with value `m · 2^(e - 150)`.
+pub fn f32_parts(v: f32) -> (i64, i32) {
+    let b = v.to_bits();
+    let (e, m) = ((b >> 23 & 0xff) as i32, (b & 0x7f_ffff) as i64);
+    assert!(e != 0xff, "non-finite activation");
+    let (m, e) = if e == 0 { (m, 1) } else { (m + (1 << 23), e) };
+    (if b >> 31 == 1 { -m } else { m }, e)
+}
+
+/// `m · 2^shift` in the field.
+pub fn signed(m: i64, shift: u32) -> Fr {
+    let f = if shift <= 64 {
+        Fr::from(u128::from(m.unsigned_abs()) << shift)
+    } else {
+        Fr::from(m.unsigned_abs()) * pow2(shift)
+    };
+    if m < 0 { -f } else { f }
+}
+
+/// Encodes `x` as integers scaled by its smallest exponent, zero-padded to
+/// `2^vars`. Returns the integers, that exponent and the most bits any needs.
+pub fn encode_x(x: &[f32], vars: usize) -> (Vec<Fr>, i32, u32) {
+    let e0 = x
+        .iter()
+        .map(|&v| f32_parts(v))
+        .filter(|p| p.0 != 0)
+        .map(|p| p.1)
+        .min()
+        .unwrap_or(0);
+    let mut out = vec![Fr::zero(); 1 << vars];
+    let mut bits = 0;
+    for (o, &v) in out.iter_mut().zip(x) {
+        let (m, e) = f32_parts(v);
+        if m != 0 {
+            let s = (e - e0) as u32;
+            bits = bits.max(64 - m.unsigned_abs().leading_zeros() + s);
+            *o = signed(m, s);
+        }
+    }
+    (out, e0, bits)
+}
+
+/// A field element as a signed integer; panics outside ±2^126.
+pub fn fr_to_i128(f: Fr) -> i128 {
+    let neg = f.into_bigint().num_bits() >= Fr::MODULUS_BIT_SIZE - 1;
+    let mag = if neg { -f } else { f }.into_bigint();
+    assert!(mag.num_bits() <= 126, "sum out of range");
+    let v = mag.0[0] as i128 | (mag.0[1] as i128) << 64;
+    if neg { -v } else { v }
+}
+
+/// Converts a row's exact sum to f32, the weights scaled by `2^(row_exp - 134)`
+/// and the activations by `2^(x_exp - 150)`. Rounds once, like `qwen_common::dot_exact`.
+pub fn y_to_f32(y: Fr, row_exp: u32, x_exp: i32) -> f32 {
+    libm::ldexpf(fr_to_i128(y) as f32, row_exp as i32 - 134 + x_exp - 150)
 }
 
 pub fn combine(vs: &[Vec<Fr>], rho: Fr) -> Vec<Fr> {
@@ -210,7 +283,7 @@ pub struct Dims {
     pub col_vars: u64,
 }
 
-/// Ligero over BN254 with blowup 2 and a 128-bit target, Blake3 throughout.
+/// Ligero over BN254 with blowup 2 and a 128-bit target, SHA-256 throughout.
 pub fn keys() -> (
     <Pcs as PolynomialCommitment<Fr, Poly>>::CommitterKey,
     <Pcs as PolynomialCommitment<Fr, Poly>>::VerifierKey,
@@ -222,11 +295,31 @@ pub fn keys() -> (
 /// One matrix's statement and proof: W committed, x and y public.
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
 pub struct MatrixProof {
+    /// The segment matrix this proof covers a row chunk of: `MATRICES` order
+    /// in a layer, 0 for the head. A matrix's chunks are consecutive, in row order.
+    pub matrix: u32,
     pub dims: Dims,
     pub commitment: <Pcs as PolynomialCommitment<Fr, Poly>>::Commitment,
+    /// Row `i` of the committed integers times `2^(row_exp[i] - 134)` is the
+    /// bf16 weight row.
+    pub row_exp: Vec<u32>,
+    /// The matrix inputs. Empty in the guest's input: the guest computes them.
     pub xs: Vec<Vec<Fr>>,
     pub ys: Vec<Vec<Fr>>,
     pub proof: Proof,
+}
+
+/// sha256 of every proof's matrix index, shape, commitment and row exponents,
+/// identifying the weights the proofs are about.
+pub fn weights_id(proofs: &[MatrixProof]) -> [u8; 32] {
+    let mut b = Vec::new();
+    for p in proofs {
+        p.matrix.serialize_uncompressed(&mut b).unwrap();
+        p.dims.serialize_uncompressed(&mut b).unwrap();
+        p.commitment.serialize_uncompressed(&mut b).unwrap();
+        p.row_exp.serialize_uncompressed(&mut b).unwrap();
+    }
+    sha256(&b)
 }
 
 impl MatrixProof {

@@ -15,10 +15,14 @@ ark-poly-commit = { version = "0.5", default-features = false, features = ["std"
 ark-crypto-primitives = { version = "0.5", default-features = false, features = ["std", "merkle_tree", "sponge", "crh"] }
 ark-std = { version = "0.5", default-features = false, features = ["std"] }
 ark-serialize = { version = "0.5", default-features = false, features = ["std", "derive"] }
-blake3 = { version = "1", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+libm = "0.2.16"
+ziskos = { workspace = true, optional = true }
 qwen-common = { path = "../common", optional = true }
 serde_json = { version = "1", optional = true }
 rayon = { version = "1", optional = true }
 
 [features]
-prover = ["dep:qwen-common", "dep:serde_json", "dep:rayon", "ark-poly-commit/parallel", "blake3/std"]
+prover = ["dep:qwen-common", "dep:serde_json", "dep:rayon", "ark-poly-commit/parallel"]
+# SHA-256 through the ZisK precompile, for the guest.
+zisk = ["dep:ziskos"]

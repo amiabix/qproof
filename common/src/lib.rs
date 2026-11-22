@@ -455,6 +455,22 @@ fn rope(v: &mut [f32], pos: usize, inv_freq: &[f32]) {
 /// The segment's output: the activations, or for the head the logits of the
 /// last `n_out` positions.
 pub fn run(input: &[u8], dot: DotFn, qdot: QDotFn) -> Vec<f32> {
+    run_with(input, dot, qdot, &mut |_, _| {}, None)
+}
+
+/// Fills `out` with the product of matrix `matrix`; called once per product, in order.
+pub type Claimed<'a> = &'a mut dyn FnMut(usize, &mut [f32]);
+
+/// Like [`run`], but passes each matrix product's input to `obs` as `(matrix, x)`,
+/// numbering matrices as in [`MATRICES`] (0 for the head). With `claimed`, the
+/// input has no matrices and each product comes from `claimed` right after its `obs`.
+pub fn run_with(
+    input: &[u8],
+    dot: DotFn,
+    qdot: QDotFn,
+    obs: &mut dyn FnMut(usize, &[f32]),
+    mut claimed: Option<Claimed>,
+) -> Vec<f32> {
     let h = Header::parse(input);
     let mut r = Reader {
         bytes: input,
@@ -474,11 +490,13 @@ pub fn run(input: &[u8], dot: DotFn, qdot: QDotFn) -> Vec<f32> {
                 .flat_map(|&t| emb[t * h.dim..][..h.dim].iter().copied())
                 .collect()
         }
-        LAYER => layer(&h, &mut r, dot, qdot, &mut |_, _| {}),
+        LAYER => layer(&h, &mut r, dot, qdot, obs, claimed),
         HEAD => {
             let x = r.floats(h.n_tok * h.dim);
             let norm = r.floats(h.dim);
-            let emb = r.mat(h.vocab, h.dim, h.flags & DOTF8 != 0, group(&h, h.dim));
+            let emb = claimed
+                .is_none()
+                .then(|| r.mat(h.vocab, h.dim, h.flags & DOTF8 != 0, group(&h, h.dim)));
             let (mut xn, mut xw) = (vec![0.0; h.dim], vec![0; h.dim / 2]);
             let mut a = Act::new(h.dim, h.flags & DOTF8 != 0, group(&h, h.dim));
             let mut logits = vec![0.0; h.n_out * h.vocab];
@@ -486,7 +504,12 @@ pub fn run(input: &[u8], dot: DotFn, qdot: QDotFn) -> Vec<f32> {
                 let t = h.n_tok - h.n_out + i;
                 rmsnorm(dot, &mut xn, &x[t * h.dim..][..h.dim], norm, h.eps, &mut xw);
                 a.set(&xn);
-                matmul(dot, qdot, out, &a, &emb, h.dim);
+                obs(0, &xn);
+                match (claimed.as_mut(), &emb) {
+                    (Some(c), _) => c(0, out),
+                    (None, Some(emb)) => matmul(dot, qdot, out, &a, emb, h.dim),
+                    (None, None) => unreachable!(),
+                }
             }
             logits
         }
@@ -505,44 +528,30 @@ pub const MATRICES: [&str; 7] = [
     "down_proj",
 ];
 
-/// The layer's inputs to every matrix multiplication, as `(matrix, token, x)`.
-pub fn layer_matmul_inputs(input: &[u8]) -> Vec<(usize, usize, Vec<f32>)> {
-    let h = Header::parse(input);
-    let mut r = Reader {
-        bytes: input,
-        at: HEADER_BYTES,
-    };
-    let mut out = Vec::new();
-    let mut t = [0usize; 7];
-    layer(&h, &mut r, dot_soft, qdot_soft, &mut |m, x| {
-        out.push((m, t[m], x.to_vec()));
-        t[m] += 1;
-    });
-    out
-}
-
 fn layer(
     h: &Header,
     r: &mut Reader,
     dot: DotFn,
     qdot: QDotFn,
     obs: &mut dyn FnMut(usize, &[f32]),
+    mut claimed: Option<Claimed>,
 ) -> Vec<f32> {
     let q8 = h.flags & DOTF8 != 0;
+    let own = claimed.is_none();
     let (dim, hd, n) = (h.dim, h.head_dim, h.n_tok);
     let (qd, kvd) = (h.q_dim(), h.kv_dim());
     let mut x = r.floats(n * dim).to_vec();
     let input_ln = r.floats(dim);
-    let wq = r.mat(qd, dim, q8, group(h, dim));
-    let wk = r.mat(kvd, dim, q8, group(h, dim));
-    let wv = r.mat(kvd, dim, q8, group(h, dim));
-    let wo = r.mat(dim, qd, q8, group(h, qd));
+    let wq = own.then(|| r.mat(qd, dim, q8, group(h, dim)));
+    let wk = own.then(|| r.mat(kvd, dim, q8, group(h, dim)));
+    let wv = own.then(|| r.mat(kvd, dim, q8, group(h, dim)));
+    let wo = own.then(|| r.mat(dim, qd, q8, group(h, qd)));
     let q_norm = r.floats(hd);
     let k_norm = r.floats(hd);
     let post_ln = r.floats(dim);
-    let wg = r.mat(h.hidden, dim, q8, group(h, dim));
-    let wu = r.mat(h.hidden, dim, q8, group(h, dim));
-    let wd = r.mat(dim, h.hidden, q8, group(h, h.hidden));
+    let wg = own.then(|| r.mat(h.hidden, dim, q8, group(h, dim)));
+    let wu = own.then(|| r.mat(h.hidden, dim, q8, group(h, dim)));
+    let wd = own.then(|| r.mat(dim, h.hidden, q8, group(h, h.hidden)));
 
     let inv_freq: Vec<f32> = (0..hd / 2)
         .map(|i| 1.0 / libm::powf(h.rope_theta, (2 * i) as f32 / hd as f32))
@@ -560,6 +569,14 @@ fn layer(
         Act::new(h.hidden, q8, group(h, h.hidden)),
     );
     let mut hw = vec![0u64; hd / 2];
+    let mut mm = |m: usize, out: &mut [f32], x: &Act, w: &Option<Mat>, cols: usize| match (
+        claimed.as_mut(),
+        w,
+    ) {
+        (Some(c), _) => c(m, out),
+        (None, Some(w)) => matmul(dot, qdot, out, x, w, cols),
+        (None, None) => unreachable!(),
+    };
 
     for t in 0..n {
         rmsnorm(dot, &mut xn, &x[t * dim..][..dim], input_ln, h.eps, &mut xw);
@@ -567,9 +584,9 @@ fn layer(
         for m in 0..3 {
             obs(m, &xn);
         }
-        matmul(dot, qdot, &mut q[t * qd..][..qd], &ad, &wq, dim);
-        matmul(dot, qdot, &mut k[t * kvd..][..kvd], &ad, &wk, dim);
-        matmul(dot, qdot, &mut v[t * kvd..][..kvd], &ad, &wv, dim);
+        mm(0, &mut q[t * qd..][..qd], &ad, &wq, dim);
+        mm(1, &mut k[t * kvd..][..kvd], &ad, &wk, dim);
+        mm(2, &mut v[t * kvd..][..kvd], &ad, &wv, dim);
         for (heads, weight, buf) in [
             (h.heads, q_norm, &mut q[t * qd..][..qd]),
             (h.kv_heads, k_norm, &mut k[t * kvd..][..kvd]),
@@ -663,7 +680,7 @@ fn layer(
         }
         aq.set(&attn);
         obs(3, &attn);
-        matmul(dot, qdot, &mut o, &aq, &wo, qd);
+        mm(3, &mut o, &aq, &wo, qd);
         let xt = &mut x[t * dim..][..dim];
         for (a, &b) in xt.iter_mut().zip(&o) {
             *a += b;
@@ -673,14 +690,14 @@ fn layer(
         ad.set(&xn);
         obs(4, &xn);
         obs(5, &xn);
-        matmul(dot, qdot, &mut g, &ad, &wg, dim);
-        matmul(dot, qdot, &mut u, &ad, &wu, dim);
+        mm(4, &mut g, &ad, &wg, dim);
+        mm(5, &mut u, &ad, &wu, dim);
         for (a, &b) in g.iter_mut().zip(&u) {
             *a = *a / (1.0 + libm::expf(-*a)) * b;
         }
         ah.set(&g);
         obs(6, &g);
-        matmul(dot, qdot, &mut o, &ah, &wd, h.hidden);
+        mm(6, &mut o, &ah, &wd, h.hidden);
         for (a, &b) in xt.iter_mut().zip(&o) {
             *a += b;
         }

@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-ziskos = { workspace = true }
-qwen-sumcheck = { path = "../sumcheck" }
+# The verifier's temporaries outgrow the bump allocator, so use dlmalloc.
+ziskos = { workspace = true, features = ["zisk-embedded-dlmalloc-alloc"] }
+qwen-sumcheck = { path = "../sumcheck", features = ["zisk"] }
+qwen-common = { path = "../common" }
+ark-bn254 = { version = "0.5", default-features = false, features = ["std"] }
 ark-serialize = { version = "0.5", default-features = false, features = ["std"] }

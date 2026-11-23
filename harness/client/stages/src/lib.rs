@@ -1,5 +1,5 @@
 //! Embedding and vocabulary-sharded head children for the token-ID,
-//! ordered-FP32, greedy Qwen3-4B suite. The guests and the native host run the
+//! original-BF16, greedy Qwen3-4B suite. The guests and the native host run the
 //! same functions; only the SHA-256 implementation differs.
 //!
 //! Weight access. Both stages read the tied `model.embed_tokens.weight` matrix
@@ -290,9 +290,9 @@ pub mod head {
     //! | rows [shard*2^s, min((shard+1)*2^s, VOCAB)) raw BF16 | (18 - s) siblings x 32
     //! ```
     //! For each of the last R positions the guest applies the final RMSNorm
-    //! (`qwen_common::run_with`, HEAD segment, ordered FP32) and computes every
-    //! logit of the shard with the reference projection (`pci_layer::project`:
-    //! sequential FP32 from +0 over exactly widened BF16). Any nonfinite logit
+    //! (`qwen_common::run_with`, HEAD segment, BF16 norm) and computes every
+    //! logit of the shard with the reference projection (`pci_layer::project_bf16`:
+    //! the pinned Mac HF BF16 kernel, BF16 logits). Any nonfinite logit
     //! rejects. The shard winner is the lowest ID among the largest values
     //! (`>` comparison, so +0 and -0 tie). The receipt binds the whole window.
     use super::*;
@@ -372,7 +372,7 @@ pub mod head {
             n_tok: positions as usize,
             rope_theta: 1e6,
             eps: 1e-6,
-            flags: 0,
+            flags: qwen_common::BF16_SERVING,
             n_out: predictions as usize,
         }
     }
@@ -382,13 +382,12 @@ pub mod head {
     /// Every kernel must be bit-identical to [`reference_kernel`].
     pub type Kernel<'a> = &'a mut dyn FnMut(&[u32], &[u8], &mut [f32]);
 
-    /// `pci_layer::project` (sequential FP32 from +0 over exactly widened BF16)
-    /// for each position.
+    /// `pci_layer::project_bf16` (the pinned Mac HF BF16 kernel) for each position.
     pub fn reference_kernel(x: &[u32], matrix: &[u8], out: &mut [f32]) {
         let cols = DIM as usize;
         let rows = matrix.len() / (2 * cols);
         for (xt, ot) in x.chunks_exact(cols).zip(out.chunks_exact_mut(rows)) {
-            pci_layer::project_bits(xt, matrix, ot);
+            pci_layer::project_bf16_bits(xt, matrix, ot);
         }
     }
 

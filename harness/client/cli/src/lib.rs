@@ -233,19 +233,7 @@ pub const NORM: &str = "model.norm.weight";
 
 // ------------------------------------------------------------------ release
 
-pub const SUITE_TEXT: &str = "qwen3-4b token-ids greedy-lowest-id; layer-record v1; child-receipt v2; \
-ordered-fp32 bf16-weights; qwen-common 11518e3; libm 0.2.16; rows-v1 depth 18; embed-record v1; \
-head-shard-record v1 receipt v1; zisk leaf proofs, publics = 32-byte digest then zeros; bundle v1";
-
-/// SuiteID: the function and encodings. Approved programs are pinned per role
-/// in the release, so kernels computing the same function share digests.
-pub fn suite_id(shard_log2: u32) -> Hash {
-    let mut pre = b"PCI/v1/suite\0".to_vec();
-    pre.extend(SUITE_TEXT.as_bytes());
-    pre.extend(b"; head shard log2 ");
-    pre.extend(shard_log2.to_string().as_bytes());
-    sha(&pre)
-}
+pub use pci_receipts::suite_id;
 
 /// Client-held release pins. Loaded from a file the client obtained
 /// independently of any bundle.
@@ -706,7 +694,8 @@ pub fn join(
         authenticate(i, kind, &digest)?;
         match *receipt {
             ChildReceipt::Stage(rc) => {
-                if rc.positions != t || (rc.first_prediction, rc.predictions) != (0, 0) {
+                let window = if rc.role == Role::Embed { (0, 0) } else { (p - 1, r) };
+                if rc.positions != t || (rc.first_prediction, rc.predictions) != window {
                     return Err(Reject::Receipt(i, "positions or window".into()));
                 }
                 if rc.input != previous {

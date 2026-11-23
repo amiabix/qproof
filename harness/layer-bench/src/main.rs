@@ -16,7 +16,7 @@ fn timed<T>(name: &str, f: impl FnOnce() -> T) -> T {
 fn check(args: &[String]) -> Res<()> {
     let stdin = std::fs::read(&args[0])?;
     let record = record_of_stdin(&stdin);
-    let reference = timed("reference (execute, dot_soft per position)", || execute(record, sha))?;
+    let reference = timed("reference (execute, Mac BF16 reference per position)", || execute(record, sha))?;
     let digest = digest_of(record, &reference.receipt);
     let bits = |o: &[f32]| -> Vec<u8> { o.iter().flat_map(|v| v.to_le_bytes()).collect() };
     let out = bits(&reference.output);
@@ -62,7 +62,7 @@ fn sample(args: &[String]) -> Res<()> {
     let mut groups: Vec<(Vec<u32>, usize, Vec<Vec<u8>>)> = vec![];
     let o = pci_layer::execute_batched(record, sha, &mut |x, cols, m, outs| {
         groups.push((x.to_vec(), cols, m.iter().map(|b| b.to_vec()).collect()));
-        pci_layer::project_batch_reference(x, cols, m, outs);
+        pci_layer::project_batch_bf16(x, cols, m, outs);
     })?;
     let names = ["q", "k", "v", "o", "gate", "up", "down"];
     let mut manifest = String::new();
@@ -80,9 +80,9 @@ fn sample(args: &[String]) -> Res<()> {
                 let xs = &x[..n * cols];
                 let k = picked.len() / (2 * cols);
                 let mut want = vec![0f32; n * k];
-                pci_dotf8::reference(xs, *cols, &picked, &mut want);
+                pci_layer::project_batch_bf16(xs, *cols, &[&picked], &mut [&mut want]);
                 let digest = sha(&want.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>());
-                for mode in 0..3 {
+                for mode in 3..=5 {
                     let name = format!("{}.t{n}.m{mode}.stdin", names[m]);
                     std::fs::write(dir.join(&name), stdin_of(&sample_payload(mode, n, *cols, xs, &picked)))?;
                 }

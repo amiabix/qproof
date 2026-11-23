@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-# No dependencies: the dot_f8 precompile is reached through the `DotF8` trait,
-# implemented by the guest (syscall) and here in software for native runs.
+# The dot_f8 precompile is reached through the `DotF8` trait, implemented by the
+# guest (syscall) and here in software for native runs. libm: the fused fallback.
 [dependencies]
+qwen-common = { path = "../../common" }
+libm = "0.2.16"
+
+[dev-dependencies]
+pci-layer = { path = "../layer" }

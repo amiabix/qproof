@@ -14,9 +14,10 @@ def h(domain, body):
     return hashlib.sha256(b"PCI/v1/" + domain + b"\0" + body).digest()
 
 
-def profile(t):
+def profile(t, r):
+    # n_out carries the prediction count R; ModelID uses the template (0, 0).
     return (struct.pack("<8I", 1, 2560, 9728, 32, 8, 128, 151936, t)
-            + bytes.fromhex("00247449bd378635") + bytes(24))
+            + bytes.fromhex("00247449bd378635") + struct.pack("<II", 32, r) + bytes(16))
 
 
 def stages():
@@ -33,8 +34,8 @@ def model_id(inv):
         digests = [bytes.fromhex(inv["tensors"][n]["sha256"]) for n in names]
         roots.append(h(b"stage-weights", bytes([kind]) + struct.pack("<II", index, len(digests))
                        + b"".join(digests)))
-    return h(b"model/qwen3-4b/ordered-fp32-bf16", bytes.fromhex(inv["checkpoint_id"])
-             + profile(0) + struct.pack("<I", len(roots)) + b"".join(roots)), roots
+    return h(b"model/qwen3-4b/mac-arm64-bf16-sdpa-v1", bytes.fromhex(inv["checkpoint_id"])
+             + profile(0, 0) + struct.pack("<I", len(roots)) + b"".join(roots)), roots
 
 
 if __name__ == "__main__":
@@ -47,4 +48,8 @@ if __name__ == "__main__":
     weights = [c["weights"] for c in bundle["children"]]
     assert weights == [r.hex() for r in model_id(inv)[1]], "stage roots differ"
     assert mid.hex() == bundle["info"]["model_id"], "ModelID differs"
-    print("stage roots and ModelID agree")
+    r = len(bundle["reply"])
+    for c in bundle["children"][1:]:
+        t = c["positions"]
+        assert (c["first_prediction"], c["predictions"]) == (t - r, r), "prediction window differs"
+    print("stage roots, ModelID and prediction windows agree")

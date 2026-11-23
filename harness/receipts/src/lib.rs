@@ -1,7 +1,21 @@
-//! Client-side join for the token-ID, ordered-FP32, greedy Qwen3-4B suite.
+//! Client-side join for the token-ID, BF16, greedy Qwen3-4B suite.
 //! The backend adapter owns key selection and proof verification. Each guest
 //! commits a 32-byte receipt digest followed by the zkVM's zero padding.
 use sha2::{Digest, Sha256};
+
+pub const SUITE_TEXT: &str = "qwen3-4b token-ids greedy-lowest-id; layer-record v2; child-receipt v3; \
+mac-arm64-bf16-sdpa-v1; torch cf30153c; transformers 5.15.1; libm 0.2.16; rows-v1 depth 18; embed-record v1; \
+head-shard-record v1 receipt v1; zisk leaf proofs, publics = 32-byte digest then zeros; bundle v1";
+
+/// SuiteID: the function and encodings. Approved programs are pinned per role
+/// in the release, so kernels computing the same function share digests.
+pub fn suite_id(shard_log2: u32) -> Hash {
+    let mut pre = b"PCI/v1/suite\0".to_vec();
+    pre.extend(SUITE_TEXT.as_bytes());
+    pre.extend(b"; head shard log2 ");
+    pre.extend(shard_log2.to_string().as_bytes());
+    Sha256::digest(&pre).into()
+}
 
 pub type Hash = [u8; 32];
 pub const VOCAB: u32 = 151936;
@@ -48,10 +62,12 @@ impl Release {
     }
 }
 
-/// The 64-byte segment header the ordered-FP32 BF16 layer profile accepts,
+/// The 64-byte segment header the pinned BF16 serving profile accepts,
 /// in `qwen_common::Header` layout: kind 1, dim, hidden, heads, kv heads,
-/// head dim, vocab, positions, rope theta, RMSNorm epsilon, flags 0, n_out 0.
-pub fn layer_profile(positions: u32) -> [u8; 64] {
+/// head dim, vocab, positions T, rope theta, RMSNorm epsilon, BF16 norm flag,
+/// n_out = predictions R. The prompt is the first P = T - R + 1 positions.
+/// Real layer records have 1 <= R <= T; ModelID uses the template (0, 0).
+pub fn layer_profile(positions: u32, predictions: u32) -> [u8; 64] {
     let fields = [
         1,
         DIM,
@@ -63,8 +79,8 @@ pub fn layer_profile(positions: u32) -> [u8; 64] {
         positions,
         1_000_000f32.to_bits(),
         1e-6f32.to_bits(),
-        0,
-        0,
+        32, // qwen_common::BF16_SERVING
+        predictions,
     ];
     let mut out = [0; 64];
     for (o, f) in out.chunks_exact_mut(4).zip(fields) {
@@ -101,9 +117,9 @@ pub fn weights_root(role: Role, tensors: &[Hash]) -> Hash {
 }
 
 pub fn model_id(checkpoint: &Hash, weights: &[Hash]) -> Hash {
-    let mut h = start(b"model/qwen3-4b/ordered-fp32-bf16");
+    let mut h = start(b"model/qwen3-4b/mac-arm64-bf16-sdpa-v1");
     h.update(checkpoint);
-    h.update(layer_profile(0));
+    h.update(layer_profile(0, 0));
     h.update((weights.len() as u32).to_le_bytes());
     for w in weights {
         h.update(w);
@@ -174,7 +190,7 @@ pub fn request_id(release: &Release, request: &Request) -> Hash {
 pub struct Receipt {
     pub role: Role,
     pub positions: u32,
-    /// For the head these specify the prediction window. Zero for other roles.
+    /// For layers and the head these specify the prediction window. Zero for the embedding.
     pub first_prediction: u32,
     pub predictions: u32,
     /// Embedding consumes a token root; layers and head consume activation roots.
@@ -336,11 +352,7 @@ pub fn verify_bundle<B: ProofBackend>(
         let digest = backend
             .verify_child(&release.suite, role, proof)
             .map_err(|_| Error::Proof)?;
-        let window = if role == Role::Head {
-            (p - 1, r)
-        } else {
-            (0, 0)
-        };
+        let window = if role == Role::Embed { (0, 0) } else { (p - 1, r) };
         if receipt.weights != release.weights[i] {
             return Err(Error::Weights);
         }

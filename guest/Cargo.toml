@@ -11,3 +11,8 @@ qwen-common = { path = "../common" }
 default = ["floatdot"]
 floatdot = ["qwen-common/floatdot"]
 dotf8 = ["qwen-common/dotf8"]
+
+[[bin]]
+test = false
+name = "qwen-guest"
+path = "src/main.rs"

@@ -2,6 +2,8 @@
 
 Design for review. The target is a client-verifiable reply from the original BF16 checkpoint under a specified arithmetic profile. This worktree implements checkpoint enrollment, the child receipt digest and the client-side transcript and layer join checks. The inference guests, verifier and composition described below are delivery requirements. A successful emulator comparison is evidence of arithmetic agreement on its fixture.
 
+For the implemented Instruct-2507 profile, start with the [numerical parity results](harness/measurements/QWEN_BF16_PARITY.md) and the [rental preflight](harness/measurements/RENTAL_READINESS.md). The 500/250 transcript currently fails bitwise decode parity. The diagram below describes the logical stages; the implementation splits the output head into vocabulary shards.
+
 ## What the client accepts
 
 Given independently installed release pins and a client-created request, accepting a complete reply means that greedy decoding the specified function on the client's token IDs yields exactly the supplied reply IDs, ending at the first allowed stop or the requested length limit. This establishes a computation's answer. It does not attest to the server process that originally served the bytes.

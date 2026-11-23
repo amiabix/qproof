@@ -11,6 +11,7 @@
 //! pci-client proof   --release R --kind embed|layer|head --proof FILE [--digest HEX64]
 //! pci-client assemble --expected expected.json --layers LAYER_BUNDLE.json --proofs DIR --out DIR
 //!   (layer receipts from a pci-layer-bundle/v1 file; a child without NAME.proof.bin in DIR gets "proof": null)
+//! pci-client check-prepared --release R --request Q --bundle DIR --digests ORDERED_HEX_LINES
 //! pci-client verify  --release R --request Q --bundle DIR
 //! pci-client verify-compact --release R --request Q --bundle DIR --recurser-vk VK.json --aggregate FILE
 //!   (bundle.json receipts are used; per-child proofs are ignored; one aggregate proof)
@@ -244,6 +245,28 @@ fn proof_cmd(o: &Opts) -> Res<()> {
     Ok(())
 }
 
+// Checks the expected emulator publics against the client's own request before paid work.
+fn check_prepared_cmd(o: &Opts) -> Res<()> {
+    let pins = Pins::from_json(&load_json(&o.path("release")?)?)?;
+    let req = ClientRequest::from_json(&load_json(&o.path("request")?)?)?;
+    let bundle = Bundle::load(&o.path("bundle")?)?;
+    let digests = std::fs::read_to_string(o.path("digests")?).map_err(|e| e.to_string())?;
+    let expected: Vec<_> = digests.lines().map(unhex).collect::<Res<_>>()?;
+    if expected.len() != bundle.children.len() {
+        return Err("prepared digest count differs from the receipt count".into());
+    }
+    let receipts: Vec<_> = bundle.children.iter().map(|child| &child.receipt).collect();
+    let statement = join(&pins, &req, &bundle.reply, &receipts, &mut |i, _, digest| {
+        if expected[i] != *digest {
+            return Err(Reject::Receipt(i, "prepared digest mismatch".into()));
+        }
+        Ok(())
+    })
+    .map_err(|e| format!("receipt preflight: {e:?}"))?;
+    println!("Prepared {} receipts for request {} (proofs pending)", receipts.len(), hex(&statement.request_id));
+    Ok(())
+}
+
 fn verify_cmd(o: &Opts) -> Res<()> {
     let pins = Pins::from_json(&load_json(&o.path("release")?)?)?;
     let req = ClientRequest::from_json(&load_json(&o.path("request")?)?)?;
@@ -286,6 +309,15 @@ fn assemble_cmd(o: &Opts) -> Res<()> {
     let l = load_json(&o.path("layers")?)?;
     if l["format"] != "pci-layer-bundle/v1" {
         return Err("layers: not a pci-layer-bundle/v1".into());
+    }
+    for (field, layer_field) in [("model", "model_id"), ("suite", "suite_id"), ("request", "request_id")] {
+        let expected = e[field].as_str().ok_or_else(|| format!("missing {field}"))?;
+        if l["info"][layer_field].as_str() != Some(expected) {
+            return Err(format!("layer bundle and head records disagree on {field}"));
+        }
+    }
+    if l["reply"] != e["reply"] {
+        return Err("layer bundle and head records disagree on reply".into());
     }
     let proofs = o.path("proofs")?;
     let out = o.path("out")?;
@@ -345,6 +377,7 @@ fn main() {
             "prepare" => prepare_cmd(&o),
             "proof" => proof_cmd(&o),
             "verify" => verify_cmd(&o),
+            "check-prepared" => check_prepared_cmd(&o),
             "assemble" => assemble_cmd(&o),
             "verify-compact" => verify_compact_cmd(&o),
             c => Err(format!("unknown command {c}")),

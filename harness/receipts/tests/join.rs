@@ -36,11 +36,12 @@ fn fixtures(r: &Release, q: &Request, reply: &[u32]) -> Vec<(Receipt, FixturePro
         .enumerate()
     {
         let head = role == Role::Head;
+        let embed = role == Role::Embed;
         let receipt = Receipt {
             role,
             positions: (q.prompt.len() + reply.len() - 1) as u32,
-            first_prediction: if head { q.prompt.len() as u32 - 1 } else { 0 },
-            predictions: if head { reply.len() as u32 } else { 0 },
+            first_prediction: if embed { 0 } else { q.prompt.len() as u32 - 1 },
+            predictions: if embed { 0 } else { reply.len() as u32 },
             input,
             output: if head {
                 reply_root(reply)
@@ -107,6 +108,8 @@ fn individually_authenticated_but_disconnected_or_wrong_window() {
         (18, "input"),
         (37, "output"),
         (37, "window"),
+        (5, "window"),
+        (5, "no window"),
         (2, "positions"),
     ] {
         let mut c = fixtures(&r, &q, &[3, 4]);
@@ -115,6 +118,7 @@ fn individually_authenticated_but_disconnected_or_wrong_window() {
             "input" => rec.input[0] ^= 1,
             "output" => rec.output[0] ^= 1,
             "window" => rec.first_prediction += 1,
+            "no window" => (rec.first_prediction, rec.predictions) = (0, 0),
             _ => rec.positions += 1,
         }
         proof.1 = rec.digest(r.model(), r.suite, request_id(&r, &q));
@@ -323,4 +327,13 @@ fn stage_roster_matches_enrollment_order() {
         weights_root(Role::Layer(0), &[[0; 32]; 11]),
         weights_root(Role::Layer(1), &[[0; 32]; 11])
     );
+}
+
+#[test]
+fn layer_profile_carries_predictions_in_n_out() {
+    let p = layer_profile(7, 3);
+    assert_eq!(p[28..32], 7u32.to_le_bytes());
+    assert_eq!(p[44..48], 3u32.to_le_bytes());
+    assert_eq!(p[..44], layer_profile(7, 1)[..44]);
+    assert_eq!(p[48..], [0; 16]);
 }

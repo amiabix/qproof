@@ -2,7 +2,7 @@
 //!
 //! pci-layer-host run    --model DIR --inventory INV.json --elf LAYER.elf --ziskemu EMU --out DIR
 //!                       --prompt 1,2 [--reply 3,4] --max-reply N --nonce HEX64 [--emulate 0-35|none]
-//!                       [--emu-args "..."] [--keep 1] [--dump 0-0] [--jobs N]
+//!                       [--emu-args "..."] [--shard-log2 9] [--keep 1] [--dump 0-0] [--jobs N]
 //! pci-layer-host verify --inventory INV.json --elf-sha256 HEX64 --bundle DIR
 //!                       --prompt 1,2 --max-reply N --nonce HEX64 [--allow-native-embed-head 1]
 //! pci-layer-host forge  --model DIR --inventory INV.json --elf LAYER.elf --ziskemu EMU --bundle DIR
@@ -104,30 +104,17 @@ impl Pins {
         Ok(weights_root(r, &d))
     }
 
-    fn release(&self) -> Res<Release> {
+    fn release(&self, o: &Opts) -> Res<Release> {
         Ok(Release {
             checkpoint: self.checkpoint,
             weights: (0..STAGES)
                 .map(|i| self.stage_root(role(i)))
                 .collect::<Res<_>>()?,
-            suite: suite_id(),
+            suite: pci_receipts::suite_id(o.0.get("shard-log2").map_or(Ok(9), |s| s.parse())?),
             context: 40960,
             stop_ids: vec![151643, 151645],
         })
     }
-}
-
-/// SuiteID names the function and encodings, not a program: layer record v1,
-/// child receipt v2, ordered-FP32 BF16 profile, qwen-common at 11518e3 with
-/// libm 0.2.16. Approved program keys (ELF / ROM root per role) are pinned
-/// separately by the verifier, so kernels that compute the same function
-/// commit byte-identical digests.
-fn suite_id() -> Hash {
-    Sha256::digest(
-        b"PCI/v1/suite\0qwen3-4b token-ids greedy-lowest-id; layer-record v1; child-receipt v2; \
-          ordered-fp32 bf16-weights; qwen-common 11518e3; libm 0.2.16",
-    )
-    .into()
 }
 
 fn role(i: usize) -> Role {
@@ -311,7 +298,7 @@ fn embed(tied: &[u8], consumed: &[u32]) -> Res<Vec<f32>> {
     Ok(x)
 }
 
-/// Greedy IDs at the last `n_out` positions under the ordered profile, lowest ID on ties.
+/// Greedy IDs at the last `n_out` positions under the pinned BF16 serving profile, lowest ID on ties.
 fn head(x: &[f32], norm: &[u8], tied: &[u8], n_out: usize) -> (Vec<u32>, Vec<f32>) {
     let t = x.len() / DIM as usize;
     let h = Header {
@@ -325,7 +312,7 @@ fn head(x: &[f32], norm: &[u8], tied: &[u8], n_out: usize) -> (Vec<u32>, Vec<f32
         n_tok: t,
         rope_theta: 1e6,
         eps: 1e-6,
-        flags: 0,
+        flags: qwen_common::BF16_SERVING,
         n_out,
     };
     let mut seg: Vec<u32> = h
@@ -339,7 +326,7 @@ fn head(x: &[f32], norm: &[u8], tied: &[u8], n_out: usize) -> (Vec<u32>, Vec<f32
     let bytes = unsafe { std::slice::from_raw_parts(seg.as_ptr().cast::<u8>(), 4 * seg.len()) };
     let xn = std::cell::RefCell::new(Vec::new());
     let mut obs = |_: usize, v: &[f32]| *xn.borrow_mut() = v.to_vec();
-    let mut claim = |_: usize, out: &mut [f32]| pci_layer::project(&xn.borrow(), tied, out);
+    let mut claim = |_: usize, out: &mut [f32]| pci_layer::project_bf16(&xn.borrow(), tied, out);
     let logits = run_with(
         bytes,
         qwen_common::dot_soft,
@@ -380,12 +367,17 @@ impl Emu {
         rec.extend_from_slice(record);
         rec.resize(rec.len().next_multiple_of(8), 0);
         std::fs::write(&stdin, &rec)?;
+        let input_limit = rec.len() + 8; // ZisK reserves one header word.
         drop(rec);
         let output = out.join(format!("{name}.output"));
         let _ = std::fs::remove_file(&output);
         let log = out.join(format!("{name}.txt"));
         let f = File::create(&log)?;
-        let child = Command::new(&self.ziskemu)
+        let mut cmd = Command::new(&self.ziskemu);
+        if !self.args.iter().any(|a| a == "--max-input-mem" || a.starts_with("--max-input-mem=")) {
+            cmd.arg("--max-input-mem").arg(input_limit.to_string());
+        }
+        let child = cmd
             .arg("-e")
             .arg(&self.elf)
             .arg("-i")
@@ -416,7 +408,12 @@ impl Emu {
         let text = std::fs::read_to_string(&job.log).unwrap_or_default();
         let steps = text
             .lines()
-            .find_map(|l| l.trim().strip_prefix("STEPS").map(|s| s.trim().to_string()))
+            .find_map(|line| {
+                let line = line.trim();
+                line.strip_prefix("STEPS").map(str::trim).or_else(|| {
+                    line.strip_prefix("process_rom() steps=")?.split_whitespace().next()
+                }).map(str::to_owned)
+            })
             .unwrap_or_default();
         eprintln!(
             "{}: emulator exit {:?}, {:.1} s, steps {steps}",
@@ -513,7 +510,7 @@ fn run(o: &Opts) -> Res<()> {
     let ck = Checkpoint::open(&o.path("model")?)?;
     let elf = o.path("elf")?;
     let elf_sha = sha(&std::fs::read(&elf)?);
-    let release = pins.release()?;
+    let release = pins.release(o)?;
     let req = Req::from(o)?;
     let q = req.as_request();
     let model = release.model();
@@ -582,7 +579,7 @@ fn run(o: &Opts) -> Res<()> {
 
     for i in 0..LAYERS as u32 {
         let tensors = layer_tensors(&ck, i)?;
-        let record = encode(model, release.suite, rq, i, &x, &tensors);
+        let record = encode(model, release.suite, rq, i, r_count as u32, &x, &tensors);
         drop(tensors);
         let native = execute(&record, sha).map_err(|e| format!("layer {i}: {e}"))?;
         let digest = pci_layer::digest_of(&record, &native.receipt);
@@ -671,7 +668,7 @@ fn run(o: &Opts) -> Res<()> {
 
 fn verify(o: &Opts) -> Res<()> {
     let pins = Pins::load(&o.path("inventory")?)?;
-    let release = pins.release()?;
+    let release = pins.release(o)?;
     let program = unhex(o.get("elf-sha256")?)?;
     let req = Req::from(o)?;
     let dir = o.path("bundle")?;
@@ -716,7 +713,7 @@ fn forge(o: &Opts) -> Res<()> {
     let ck = Checkpoint::open(&o.path("model")?)?;
     let elf = o.path("elf")?;
     let elf_sha = sha(&std::fs::read(&elf)?);
-    let release = pins.release()?;
+    let release = pins.release(o)?;
     let req = Req::from(o)?;
     let q = req.as_request();
     let model = release.model();
@@ -737,15 +734,16 @@ fn forge(o: &Opts) -> Res<()> {
     let feedback = &reply[..reply.len() - 1];
     let consumed: Vec<u32> = req.prompt.iter().chain(feedback).copied().collect();
     assert_eq!(consumed.len() as u32, consumed_t);
+    let predictions = reply.len() as u32;
     let tied = ck.raw("model.embed_tokens.weight")?;
     let mut x = embed(&tied, &consumed)?;
     drop(tied);
     for i in 0..layer {
-        let rec = encode(model, release.suite, rq, i, &x, &layer_tensors(&ck, i)?);
+        let rec = encode(model, release.suite, rq, i, predictions, &x, &layer_tensors(&ck, i)?);
         x = execute(&rec, sha).map_err(|e| e.to_string())?.output;
     }
     let tensors = layer_tensors(&ck, layer)?;
-    let honest_record = encode(model, release.suite, rq, layer, &x, &tensors);
+    let honest_record = encode(model, release.suite, rq, layer, predictions, &x, &tensors);
     let honest_receipt = execute(&honest_record, sha)
         .map_err(|e| e.to_string())?
         .receipt;
@@ -771,6 +769,7 @@ fn forge(o: &Opts) -> Res<()> {
     flip("flag-hash-input", 112 + 40, 0x01);
     flip("eps-bit", 112 + 36, 0x01);
     flip("positions", 108, 0x01);
+    flip("predictions-over-positions", 112 + 44 + 3, 0x80);
     let mut trailing = honest_record.clone();
     trailing.push(0);
     cases.push(("trailing-byte", trailing));

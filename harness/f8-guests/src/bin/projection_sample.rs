@@ -1,6 +1,6 @@
 //! Projection sample benchmark (input: pci_layer_bench::sample_payload). Mode 0: the
 //! reference ordered FP32 loop; 1: the canonical kernel, one position per call; 2: the
-//! canonical kernel, all positions per call. Commits sha256 of the output FP32 bits.
+//! canonical kernel, all positions per call. Modes 3 through 5 use the BF16 serving profile. Commits sha256 of the output FP32 bits.
 #![no_main]
 ziskos::entrypoint!(main);
 
@@ -24,6 +24,13 @@ fn main() {
             }
         }
         2 => k.project_group(x, cols, &[matrix], &mut [out.as_mut_slice()]),
+        3 => pci_layer::project_batch_bf16(x, cols, &[matrix], &mut [&mut out]),
+        4 => {
+            for (xt, ot) in x.chunks_exact(cols).zip(out.chunks_exact_mut(rows)) {
+                k.project_group_bf16(xt, cols, &[matrix], &mut [ot]);
+            }
+        }
+        5 => k.project_group_bf16(x, cols, &[matrix], &mut [&mut out]),
         _ => panic!("mode"),
     }
     let bytes: Vec<u8> = out.iter().flat_map(|v| v.to_le_bytes()).collect();

@@ -15,14 +15,14 @@ pub fn hex(b: &[u8]) -> String {
 /// The guest's batched arm with the software `dot_f8`.
 pub fn batched(record: &[u8]) -> Result<Outcome, &'static str> {
     let mut k = Kernel::new(SoftDotF8);
-    pci_layer::execute_batched(record, sha, &mut |x, cols, m, o| k.project_group(x, cols, m, o))
+    pci_layer::execute_batched(record, sha, &mut |x, cols, m, o| k.project_group_bf16(x, cols, m, o))
 }
 
 /// The guest's per-position arm with the software `dot_f8`.
 pub fn per_position(record: &[u8]) -> Result<Outcome, &'static str> {
     let mut k = Kernel::new(SoftDotF8);
     pci_layer::execute_with(record, sha, &mut |x, m, o| {
-        k.project_group(x, x.len(), &[m], &mut [o])
+        k.project_group_bf16(x, x.len(), &[m], &mut [o])
     })
 }
 
@@ -45,6 +45,7 @@ pub fn stdin_of(payload: &[u8]) -> Vec<u8> {
 /// `"PCISMPL1" | mode u32 | positions u32 | rows u32 | cols u32 | x (positions*cols FP32
 /// bits) | matrix (rows*cols raw BF16)`. Mode 0 = reference ordered FP32, 1 = canonical
 /// kernel one position per call, 2 = canonical kernel, all positions per call.
+/// Modes 3, 4 and 5 exercise the same execution layouts for the BF16 serving profile.
 pub fn sample_payload(mode: u32, positions: usize, cols: usize, x: &[u32], matrix: &[u8]) -> Vec<u8> {
     let rows = matrix.len() / (2 * cols);
     let mut v = b"PCISMPL1".to_vec();

@@ -99,7 +99,7 @@ fn reference(f: &Fixture) -> (Vec<u32>, Vec<Vec<f32>>) {
     let mut all = vec![];
     for x in &xn {
         let mut logits = vec![0.0f32; VOCAB as usize];
-        pci_layer::project(x, &f.tied, &mut logits);
+        pci_layer::project_bf16(x, &f.tied, &mut logits);
         ids.push(qwen_common::argmax(&logits) as u32);
         all.push(logits);
     }
@@ -305,10 +305,7 @@ fn head_shard_rejects_mutations() {
 fn batched_dotf8_kernel_is_a_bit_identical_head_kernel() {
     let f = fixture();
     let mut k = pci_dotf8::Kernel::new(pci_dotf8::SoftDotF8);
-    let mut dotf8 = |x: &[u32], m: &[u8], out: &mut [f32]| {
-        let p = pci_dotf8::Prepared::new(x, DIM as usize);
-        k.project(&p, m, out);
-    };
+    let mut dotf8 = |x: &[u32], m: &[u8], out: &mut [f32]| k.project_group_bf16(x, DIM as usize, &[m], &mut [out]);
     for (log2, shard) in [(9, 0), (9, 128), (12, 37), (16, 2)] {
         let rec = head::encode(M, S, Q, log2, shard, f.r, &f.a36, &f.norm, &f.tied, &f.tree);
         let a = head::execute(&rec, sha).unwrap();

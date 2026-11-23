@@ -50,7 +50,7 @@ struct Fixture {
 
 fn fixture(t: usize) -> Fixture {
     let tensors = synthetic(0x1234_5678_9abc_def1);
-    let record = encode([1; 32], [2; 32], [3; 32], 4, &x(t), &tensors);
+    let record = encode([1; 32], [2; 32], [3; 32], 4, 1, &x(t), &tensors);
     let o = execute(&record, sha).expect("honest record");
     Fixture {
         tensors,
@@ -86,7 +86,7 @@ fn honest_receipt_binds_enrollment_digests_and_both_activations() {
     );
     assert_eq!((f.receipt.positions, f.receipt.role), (3, Role::Layer(4)));
     // Causality: the first two positions do not depend on the third.
-    let prefix = encode([1; 32], [2; 32], [3; 32], 4, &x(t)[..2 * 2560], &f.tensors);
+    let prefix = encode([1; 32], [2; 32], [3; 32], 4, 1, &x(t)[..2 * 2560], &f.tensors);
     let p = execute(&prefix, sha).unwrap();
     assert_eq!(
         p.output.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
@@ -95,6 +95,23 @@ fn honest_receipt_binds_enrollment_digests_and_both_activations() {
             .map(|v| v.to_bits())
             .collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn prediction_count_is_the_receipt_window_and_out_of_range_is_rejected() {
+    let t = 3;
+    let f = fixture(t);
+    assert_eq!((f.receipt.first_prediction, f.receipt.predictions), (2, 1));
+    for r in 2..=t as u32 {
+        let rec = encode([1; 32], [2; 32], [3; 32], 4, r, &x(t), &f.tensors);
+        let g = execute(&rec, sha).unwrap();
+        assert_eq!((g.receipt.first_prediction, g.receipt.predictions), (t as u32 - r, r));
+        assert_ne!(digest_of(&rec, &g.receipt), digest_of(&f.record, &f.receipt));
+    }
+    for r in [0, t as u32 + 1, u32::MAX] {
+        let rec = encode([1; 32], [2; 32], [3; 32], 4, r, &x(t), &f.tensors);
+        assert_eq!(execute(&rec, sha).err(), Some("prediction window"), "R {r}");
+    }
 }
 
 #[test]

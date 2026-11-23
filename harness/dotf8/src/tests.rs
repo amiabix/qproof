@@ -9,6 +9,13 @@ std::thread_local! {
     pub static EXITS: Cell<usize> = const { Cell::new(0) };
 }
 
+// NaN payload propagation varies between optimized ARM and zkVM operations.
+// The layer rejects nonfinite outputs. Every non-NaN value, including signed
+// zero and infinity, still has to match bit for bit.
+fn result_bits(v: f32) -> u32 {
+    if v.is_nan() { f32::NAN.to_bits() } else { v.to_bits() }
+}
+
 struct Rng(u64);
 impl Rng {
     fn next(&mut self) -> u64 {
@@ -32,6 +39,28 @@ fn lanes_give_exact_significand_products() {
             assert_eq!(s[0], i64::from((128 | f) * chunk) << 10, "chunk {chunk} f {f}");
         }
     }
+}
+
+#[test]
+fn bf16_projection_calls_dot_f8_once_per_row_and_position() {
+    struct CountedDot(usize);
+    impl DotF8 for CountedDot {
+        fn block_sums(&mut self, x: &[u64], y: &[u64], sums: &mut [i64]) {
+            self.0 += 1;
+            SoftDotF8.block_sums(x, y, sums);
+        }
+    }
+
+    let mut kernel = Kernel::new(CountedDot(0));
+    let inputs = [1f32.to_bits(); 2 * LANES];
+    let two_rows = 0x3f80u16.to_le_bytes().repeat(2 * LANES);
+    let one_row = &two_rows[..2 * LANES];
+    let mut first = [0.0; 4];
+    let mut second = [0.0; 2];
+    kernel.project_group_bf16(&inputs, LANES, &[&two_rows, one_row], &mut [&mut first, &mut second]);
+    assert_eq!(kernel.dot.0, 2 * (2 + 1));
+    assert_eq!(first, [LANES as f32; 4]);
+    assert_eq!(second, [LANES as f32; 2]);
 }
 
 /// Weight and activation generators for one regime.
@@ -104,14 +133,14 @@ fn check(seed: u64, g: Regime, positions: usize, rows: usize, cols: usize) -> (u
     k.project(&Prepared::new(&x, cols), &matrix, &mut got);
     let slow = SLOW.with(Cell::get) - before;
     for (i, (a, b)) in got.iter().zip(&want).enumerate() {
-        assert_eq!(a.to_bits(), b.to_bits(), "{g:?} seed {seed} t {} r {}", i / rows, i % rows);
+        assert_eq!(result_bits(*a), result_bits(*b), "{g:?} seed {seed} t {} r {}", i / rows, i % rows);
     }
     // The same kernel one position at a time.
     for t in 0..positions {
         let mut one = vec![0f32; rows];
         k.project(&Prepared::new(&x[t * cols..][..cols], cols), &matrix, &mut one);
         for (a, b) in one.iter().zip(&want[t * rows..][..rows]) {
-            assert_eq!(a.to_bits(), b.to_bits(), "{g:?} per-position t {t}");
+            assert_eq!(result_bits(*a), result_bits(*b), "{g:?} per-position t {t}");
         }
     }
     (slow, positions * rows * cols)
@@ -235,4 +264,51 @@ fn exit_rates_on_real_samples() {
         let (e, s) = (EXITS.with(Cell::get) - e0, SLOW.with(Cell::get) - s0);
         std::eprintln!("{p}: {macs} MACs, fast-loop exits {e} ({:.2}%), FP32 fallbacks {s}", 100.0 * e as f64 / macs as f64);
     }
+}
+
+/// The Mac BF16 lanes against `pci_layer::project_bf16`, batched and per position.
+fn check_bf16(seed: u64, g: Regime, positions: usize, rows: usize, cols: usize) -> usize {
+    let mut r = Rng(seed | 1);
+    let matrix: Vec<u8> = (0..rows * cols).flat_map(|_| weight(&mut r, g).to_le_bytes()).collect();
+    let x: Vec<u32> = (0..positions * cols).map(|_| activation(&mut r, g)).collect();
+    let mut want = vec![0f32; positions * rows];
+    for (xt, ot) in x.chunks_exact(cols).zip(want.chunks_exact_mut(rows)) {
+        pci_layer::project_bf16_bits(xt, &matrix, ot);
+    }
+    let mut k = Kernel::new(SoftDotF8);
+    let before = SLOW.with(Cell::get);
+    let mut got = vec![0f32; positions * rows];
+    k.project_group_bf16(&x, cols, &[&matrix], &mut [&mut got]);
+    let slow = SLOW.with(Cell::get) - before;
+    for (i, (a, b)) in got.iter().zip(&want).enumerate() {
+        assert_eq!(result_bits(*a), result_bits(*b), "{g:?} seed {seed} t {} r {}", i / rows, i % rows);
+    }
+    for t in 0..positions {
+        let mut one = vec![0f32; rows];
+        k.project_group_bf16(&x[t * cols..][..cols], cols, &[&matrix], &mut [&mut one]);
+        for (a, b) in one.iter().zip(&want[t * rows..][..rows]) {
+            assert_eq!(result_bits(*a), result_bits(*b), "{g:?} per-position t {t}");
+        }
+    }
+    slow
+}
+
+#[test]
+fn bf16_lanes_bit_identical_to_mac_reference_in_every_regime() {
+    use Regime::*;
+    for g in [Realistic, AnyBits, AnyFinite, Ties, Overflow, Tiny, Zeros] {
+        for (i, &(t, rows, cols)) in [(1, 7, 32), (2, 5, 64), (3, 4, 96), (2, 6, 320)].iter().enumerate() {
+            for s in 0..40u64 {
+                check_bf16(s * 1000 + i as u64 * 7 + g as u64, g, t, rows, cols);
+            }
+        }
+    }
+}
+
+#[test]
+fn bf16_realistic_rows_take_the_integer_path() {
+    let slow = check_bf16(42, Regime::Realistic, 3, 16, 2560);
+    // One fallback per lane start (+0 accumulator) plus rare binade crossings.
+    let macs = 3 * 16 * 2560;
+    assert!(slow * 20 < macs, "{slow} fallbacks of {macs}");
 }

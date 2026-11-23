@@ -85,8 +85,8 @@ fn bundle(p: &Pins, q: &ClientRequest, reply: &[u32], winners: &[Vec<(u32, f32)>
         let rc = Receipt {
             role: Role::Layer(i),
             positions: t,
-            first_prediction: 0,
-            predictions: 0,
+            first_prediction: t - r,
+            predictions: r,
             input: root(i),
             output: root(i + 1),
             weights: p.stage_weights[i as usize + 1],
@@ -251,6 +251,9 @@ fn proof_and_receipt_mutations_reject() {
     // Positions, window, shard size, winner outside its shard, missing prediction.
     let edits: Vec<Box<dyn Fn(&mut Child)>> = vec![
         Box::new(|c| if let ChildReceipt::Stage(r) = &mut c.receipt { r.positions += 1 }),
+        Box::new(|c| if let ChildReceipt::Stage(r) = &mut c.receipt { r.first_prediction += 1 }),
+        Box::new(|c| if let ChildReceipt::Stage(r) = &mut c.receipt { r.predictions -= 1 }),
+        Box::new(|c| if let ChildReceipt::Stage(r) = &mut c.receipt { (r.first_prediction, r.predictions) = (0, 0) }),
         Box::new(|c| if let ChildReceipt::Shard(s) = &mut c.receipt { s.first_prediction += 1 }),
         Box::new(|c| if let ChildReceipt::Shard(s) = &mut c.receipt { s.predictions -= 1 }),
         Box::new(|c| if let ChildReceipt::Shard(s) = &mut c.receipt { s.shard_log2 = 16 }),
@@ -258,7 +261,7 @@ fn proof_and_receipt_mutations_reject() {
         Box::new(|c| if let ChildReceipt::Shard(s) = &mut c.receipt { s.best.pop(); }),
     ];
     for (n, e) in edits.iter().enumerate() {
-        let i = if n == 0 { 1 } else { 38 };
+        let i = if n < 4 { 1 + 18 * (n % 2) } else { 38 };
         let mut x = two_shard_case().2;
         e(&mut x.children[i]);
         resign(&p, &q, &mut x.children[i]);

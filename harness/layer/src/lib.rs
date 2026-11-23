@@ -1,11 +1,12 @@
-//! One Qwen3-4B decoder layer under the ordered-FP32 / original-BF16 profile,
-//! with every consumed byte bound into the child receipt. The guest and the
+//! One Qwen3-4B decoder layer under the original-BF16 profile, with every
+//! consumed byte bound into the child receipt. Projections are the pinned Mac
+//! HF BF16 kernel ([`project_bf16`]). The guest and the
 //! native host run this same function; only the SHA-256 implementation differs.
 //!
 //! Record v1 (little-endian, no trailing bytes):
 //! ```text
 //! "PCILAYR1" | model 32 | suite 32 | request 32 | layer u32 | positions u32
-//! | profile header 64 (must equal pci_receipts::layer_profile(positions))
+//! | profile header 64 (must equal pci_receipts::layer_profile(positions, R), 1 <= R <= positions)
 //! | A_layer: positions x 2560 FP32 bits
 //! | 11 raw BF16 checkpoint tensors in pci_receipts::LAYER_TENSORS order
 //! ```
@@ -79,6 +80,27 @@ pub fn project(x: &[f32], matrix: &[u8], out: &mut [f32]) {
     }
 }
 
+/// The pinned Mac HF BF16 projection (PyTorch 2.13.0 CPU, arm64, BF16 `linear`):
+/// `x` is rounded to BF16; lane `l < 32` accumulates `fma(w[r][j], x[j], acc)` from +0
+/// over `j = l, l + 32, ...`; lanes reduce `acc[i] += acc[i + h]` for h = 16, 8, 4,
+/// then `(acc[0] + acc[1]) + (acc[2] + acc[3])`; the result is rounded to BF16.
+/// `x.len()` must be a multiple of 32.
+pub fn project_bf16(x: &[f32], matrix: &[u8], out: &mut [f32]) {
+    assert_eq!(matrix.len(), 2 * x.len() * out.len());
+    assert_eq!(x.len() % qwen_common::BF16_DOT_LANES, 0, "columns");
+    let x: Vec<f32> = x.iter().map(|&v| qwen_common::bf16_value(v)).collect();
+    for (o, row) in out.iter_mut().zip(matrix.chunks_exact(2 * x.len())) {
+        *o = qwen_common::bf16_linear_dot(widen(row).zip(x.iter().copied()));
+    }
+}
+
+/// [`project_bf16`] over FP32 bit patterns: the layer's reference kernel.
+pub fn project_bf16_bits(x: &[u32], matrix: &[u8], out: &mut [f32]) {
+    // SAFETY: u32 and f32 have the same size, alignment and no invalid values.
+    let x = unsafe { std::slice::from_raw_parts(x.as_ptr().cast::<f32>(), x.len()) };
+    project_bf16(x, matrix, out)
+}
+
 fn activation_root(
     sha: Sha,
     model: Hash,
@@ -94,11 +116,11 @@ fn activation_root(
 }
 
 /// A projection kernel: `out[r] = row r of the raw BF16 matrix . x`, where `x`
-/// holds FP32 bit patterns. Every kernel must be bit-identical to [`project`];
+/// holds FP32 bit patterns. Every kernel must be bit-identical to [`project_bf16`];
 /// the receipt and digest do not identify the kernel.
 pub type Project<'a> = &'a mut dyn FnMut(&[u32], &[u8], &mut [f32]);
 
-/// [`project`] over FP32 bit patterns: the reference kernel.
+/// [`project`] over FP32 bit patterns: the legacy ordered-FP32 kernel.
 pub fn project_bits(x: &[u32], matrix: &[u8], out: &mut [f32]) {
     // SAFETY: u32 and f32 have the same size, alignment and no invalid values.
     let x = unsafe { std::slice::from_raw_parts(x.as_ptr().cast::<f32>(), x.len()) };
@@ -108,7 +130,7 @@ pub fn project_bits(x: &[u32], matrix: &[u8], out: &mut [f32]) {
 /// Authenticate, compute and commit one layer with the reference kernel.
 /// Any error means no receipt.
 pub fn execute(record: &[u8], sha: Sha) -> Result<Outcome, &'static str> {
-    execute_with(record, sha, &mut project_bits)
+    execute_with(record, sha, &mut project_bf16_bits)
 }
 
 /// As [`execute`] with a caller-supplied projection kernel.
@@ -123,7 +145,12 @@ pub fn execute_with(record: &[u8], sha: Sha, kernel: Project) -> Result<Outcome,
     if index as usize >= LAYERS || !(1..=40_960).contains(&positions) {
         return Err("layer index or positions");
     }
-    let profile = layer_profile(positions);
+    // Header n_out carries R: the prompt is the first T - R + 1 positions.
+    let predictions = u32_at(record, 112 + 44);
+    if !(1..=positions).contains(&predictions) {
+        return Err("prediction window");
+    }
+    let profile = layer_profile(positions, predictions);
     if record[112..FIXED] != profile {
         return Err("arithmetic profile");
     }
@@ -197,8 +224,8 @@ pub fn execute_with(record: &[u8], sha: Sha, kernel: Project) -> Result<Outcome,
         receipt: Receipt {
             role,
             positions,
-            first_prediction: 0,
-            predictions: 0,
+            first_prediction: positions - predictions,
+            predictions,
             input,
             output: out_root,
             weights,
@@ -213,12 +240,14 @@ pub fn digest_of(record: &[u8], receipt: &Receipt) -> Hash {
     receipt.digest(id(8), id(40), id(72))
 }
 
-/// Build a record. `tensors` are raw BF16 checkpoint bytes in [`LAYER_TENSORS`] order.
+/// Build a record for a request with `predictions` R (its reply length).
+/// `tensors` are raw BF16 checkpoint bytes in [`LAYER_TENSORS`] order.
 pub fn encode(
     model: Hash,
     suite: Hash,
     request: Hash,
     index: u32,
+    predictions: u32,
     x: &[f32],
     tensors: &[Vec<u8>],
 ) -> Vec<u8> {
@@ -230,7 +259,7 @@ pub fn encode(
     r.extend(request);
     r.extend(index.to_le_bytes());
     r.extend(positions.to_le_bytes());
-    r.extend(layer_profile(positions));
+    r.extend(layer_profile(positions, predictions));
     r.extend(x.iter().flat_map(|v| v.to_le_bytes()));
     for t in tensors {
         r.extend_from_slice(t);
@@ -248,6 +277,30 @@ mod tests {
                 u64::from(p[0].to_bits()) | u64::from(p.get(1).map_or(0, |h| h.to_bits())) << 32
             })
             .collect()
+    }
+
+    #[test]
+    fn bf16_projection_matches_torch_arm64() {
+        // Whole-output BF16 fingerprints of PyTorch 2.13.0 CPU arm64 `linear`, 48 rows.
+        for (cols, expected) in [
+            (2560usize, 0x7d9c14c6a40ee6a1u64),
+            (4096, 0xe4bc36bd98eeaf2a),
+            (9728, 0x5e71f76299b73a54),
+        ] {
+            let x: Vec<_> = (0..cols).map(|i| ((i * 37 % 101) as f32 - 50.0) / 37.0).collect();
+            let w: Vec<u8> = (0..48 * cols)
+                .flat_map(|i| {
+                    let v = qwen_common::bf16_value(((i * 7919 % 2003) as f32 - 1001.0) / 65536.0);
+                    ((v.to_bits() >> 16) as u16).to_le_bytes()
+                })
+                .collect();
+            let mut out = vec![0.0; 48];
+            project_bf16(&x, &w, &mut out);
+            let hash = out.iter().fold(0xcbf29ce484222325u64, |h, y| {
+                (h ^ u64::from(y.to_bits() >> 16)).wrapping_mul(0x100000001b3)
+            });
+            assert_eq!(hash, expected, "cols {cols}");
+        }
     }
 
     #[test]
@@ -290,7 +343,7 @@ mod tests {
 /// A batched projection kernel: `kernel(x, cols, matrices, outs)` sets `outs[k]`
 /// (`positions x rows_k`, row-major) to every row of `x` (`positions x cols` FP32 bit
 /// patterns) times raw BF16 `matrices[k]` (`rows_k x cols`). Every kernel must be
-/// bit-identical to [`project`] applied per position; the receipt and digest do not
+/// bit-identical to [`project_bf16`] applied per position; the receipt and digest do not
 /// identify the kernel.
 pub type ProjectBatch<'a> = &'a mut dyn FnMut(&[u32], usize, &[&[u8]], &mut [&mut [f32]]);
 
@@ -312,7 +365,12 @@ pub fn execute_batched(
     if index as usize >= LAYERS || !(1..=40_960).contains(&positions) {
         return Err("layer index or positions");
     }
-    let profile = layer_profile(positions);
+    // Header n_out carries R: the prompt is the first T - R + 1 positions.
+    let predictions = u32_at(record, 112 + 44);
+    if !(1..=positions).contains(&predictions) {
+        return Err("prediction window");
+    }
+    let profile = layer_profile(positions, predictions);
     if record[112..FIXED] != profile {
         return Err("arithmetic profile");
     }
@@ -379,8 +437,8 @@ pub fn execute_batched(
         receipt: Receipt {
             role,
             positions,
-            first_prediction: 0,
-            predictions: 0,
+            first_prediction: positions - predictions,
+            predictions,
             input,
             output: out_root,
             weights,
@@ -389,12 +447,22 @@ pub fn execute_batched(
     })
 }
 
-/// [`project`] applied per position over a group: the batched reference kernel.
+/// [`project`] applied per position over a group: the legacy ordered-FP32 batched kernel.
 pub fn project_batch_reference(x: &[u32], cols: usize, matrices: &[&[u8]], outs: &mut [&mut [f32]]) {
     for (m, out) in matrices.iter().zip(outs.iter_mut()) {
         let rows = m.len() / (2 * cols);
         for (xt, ot) in x.chunks_exact(cols).zip(out.chunks_exact_mut(rows)) {
             project_bits(xt, m, ot);
+        }
+    }
+}
+
+/// [`project_bf16`] applied per position over a group: the batched reference kernel.
+pub fn project_batch_bf16(x: &[u32], cols: usize, matrices: &[&[u8]], outs: &mut [&mut [f32]]) {
+    for (m, out) in matrices.iter().zip(outs.iter_mut()) {
+        let rows = m.len() / (2 * cols);
+        for (xt, ot) in x.chunks_exact(cols).zip(out.chunks_exact_mut(rows)) {
+            project_bf16_bits(xt, m, ot);
         }
     }
 }

@@ -1,4 +1,4 @@
-//! Qwen3 in `f32`, one segment at a time: the embedding, one decoder layer, or
+//! Qwen3 with FP32 storage and profile-specific arithmetic, one segment at a time: the embedding, one decoder layer, or
 //! the head. A segment is one input record:
 //!
 //! ```text
@@ -17,6 +17,8 @@
 #![no_std]
 
 extern crate alloc;
+
+mod attention_bf16;
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -39,6 +41,8 @@ pub const ROWSCALE: u32 = 8;
 /// Flag, with `DOTF8`: attention in E4M3 too. q and k with one scale per head, v with one
 /// scale per channel over all positions, the softmax weights with one per query.
 pub const ATTN8: u32 = 16;
+/// Original Qwen weights with the pinned BF16 CPU serving arithmetic.
+pub const BF16_SERVING: u32 = 32;
 
 pub type DotFn = fn(&[u64], &[u64], usize) -> f32;
 /// The exact sum of each group of `g` products of two E4M3 vectors of `n` values, in units of
@@ -242,7 +246,8 @@ pub struct Header {
     pub rope_theta: f32,
     pub eps: f32,
     pub flags: u32,
-    /// Head only: positions whose logits are computed, the last `n_out`.
+    /// The head computes logits for the final `n_out` positions.
+    /// In the BF16 layer profile, R counts predicted tokens; prefill ends at T - R.
     pub n_out: usize,
 }
 
@@ -287,6 +292,17 @@ impl Header {
             flags: u(10),
             n_out: u(11) as usize,
         }
+    }
+
+    fn projection_dot(&self, default: DotFn) -> DotFn {
+        if self.flags & BF16_SERVING == 0 { return default; }
+        assert_eq!(self.flags & (FLOATDOT | DOTF8), 0, "conflicting arithmetic profiles");
+        bf16_dot_packed
+    }
+
+    fn prefill_len(&self) -> usize {
+        assert!((1..=self.n_tok).contains(&self.n_out), "invalid prediction window");
+        self.n_tok - self.n_out + 1
     }
 
     pub fn q_dim(&self) -> usize {
@@ -419,7 +435,69 @@ fn matmul(dot: DotFn, qdot: QDotFn, out: &mut [f32], x: &Act, w: &Mat, cols: usi
     }
 }
 
-fn rmsnorm(dot: DotFn, out: &mut [f32], x: &[f32], weight: &[f32], eps: f32, xw: &mut [u64]) {
+/// Round to nearest even and return the exactly widened BF16 value.
+pub fn bf16_value(x: f32) -> f32 {
+    let bits = x.to_bits();
+    if x.is_nan() {
+        return f32::from_bits((bits & 0xffff0000) | 0x00400000);
+    }
+    f32::from_bits(bits.wrapping_add(0x7fff + ((bits >> 16) & 1)) & 0xffff0000)
+}
+
+/// Reduction order of the pinned arm64 PyTorch BF16 linear kernel.
+pub const BF16_DOT_LANES: usize = 32;
+
+pub fn finish_bf16_dot(mut lanes: [f32; BF16_DOT_LANES]) -> f32 {
+    for offset in [16, 8, 4] {
+        for i in 0..offset { lanes[i] += lanes[i + offset]; }
+    }
+    bf16_value((lanes[0] + lanes[1]) + (lanes[2] + lanes[3]))
+}
+
+/// Both operands are exactly widened BF16 numbers.
+pub fn bf16_linear_dot(pairs: impl Iterator<Item = (f32, f32)>) -> f32 {
+    let mut lanes = [0.0; BF16_DOT_LANES];
+    for (i, (a, b)) in pairs.enumerate() {
+        let lane = &mut lanes[i % BF16_DOT_LANES];
+        *lane = libm::fmaf(a, b, *lane);
+    }
+    finish_bf16_dot(lanes)
+}
+
+fn bf16_dot_packed(a: &[u64], b: &[u64], n: usize) -> f32 {
+    assert_eq!(n % BF16_DOT_LANES, 0);
+    let get = |w: &[u64], i: usize| bf16_value(f32::from_bits((w[i/2] >> (32 * (i%2))) as u32));
+    bf16_linear_dot((0..n).map(|i| (get(a, i), get(b, i))))
+}
+
+fn bf16_rmsnorm(out: &mut [f32], x: &[f32], weight: &[f32], eps: f32) {
+    // arm64 PyTorch SumKernel uses four interleaved four-lane sums,
+    // carrying each group of 16 iterations. Both Qwen widths fit two levels.
+    assert!(matches!(x.len(), 128 | 2560));
+    let mut totals = [0.0f32; 16];
+    for chunk in x.chunks(256) {
+        let mut partial = [0.0f32; 16];
+        for row in chunk.chunks_exact(16) {
+            for (acc, &value) in partial.iter_mut().zip(row) {
+                let v = bf16_value(value);
+                *acc += v * v;
+            }
+        }
+        for (acc, part) in totals.iter_mut().zip(partial) {
+            *acc += part;
+        }
+    }
+    let sum: f32 = (0..4).map(|i| totals[i] + totals[i+4] + totals[i+8] + totals[i+12]).sum();
+    let inv = 1.0 / libm::sqrtf(sum / x.len() as f32 + eps);
+    for ((o, &v), &w) in out.iter_mut().zip(x).zip(weight) {
+        *o = bf16_value(bf16_value(bf16_value(v) * inv) * w);
+    }
+}
+
+fn rmsnorm(flags: u32, dot: DotFn, out: &mut [f32], x: &[f32], weight: &[f32], eps: f32, xw: &mut [u64]) {
+    if flags & BF16_SERVING != 0 {
+        return bf16_rmsnorm(out, x, weight, eps);
+    }
     pack(x, xw);
     let ss = dot(xw, xw, x.len()) / x.len() as f32;
     let inv = 1.0 / libm::sqrtf(ss + eps);
@@ -440,15 +518,84 @@ fn softmax(x: &mut [f32]) {
     }
 }
 
-/// HF's `rotate_half` RoPE on one head at position `pos`.
-fn rope(v: &mut [f32], pos: usize, inv_freq: &[f32]) {
-    let half = v.len() / 2;
-    for i in 0..half {
-        let a = pos as f32 * inv_freq[i];
+/// For the pinned theta and head size, the reference CPU power function differs
+/// by one FP32 ulp at frequency 37.
+fn inv_freq(h: &Header) -> Vec<f32> {
+    let hd = h.head_dim;
+    if h.flags & BF16_SERVING == 0 {
+        return (0..hd / 2)
+            .map(|i| 1.0 / libm::powf(h.rope_theta, (2 * i) as f32 / hd as f32))
+            .collect();
+    }
+    assert!(h.rope_theta == 1e6 && hd == 128);
+    let mut f: Vec<f32> = (0..hd / 2)
+        .map(|i| 1.0 / (libm::pow(1e6, ((2 * i) as f32 / 128.0) as f64) as f32))
+        .collect();
+    f[37] = f32::from_bits(0x39b229fb);
+    f
+}
+
+/// `(position, index, sin)` where the pinned PyTorch's Sleef `sinf` and `libm::sinf` round
+/// to different BF16 values: every case below position 40960 with theta 1e6, head dim 128.
+/// The enrolled graph caps the context at 40,960 positions.
+const BF16_SIN_FIX: [(usize, usize, f32); 5] = [
+    (2954, 8, -0.61328125),
+    (3269, 35, 0.98828125),
+    (16522, 48, 0.5),
+    (27582, 38, 0.95703125),
+    (29443, 16, 0.91796875),
+];
+
+// Queries and keys at a given position share these angles across every head.
+fn rope_angles(flags: u32, pos: usize, inv_freq: &[f32], angles: &mut [(f32, f32)]) {
+    for (i, (&freq, pair)) in inv_freq.iter().zip(angles).enumerate() {
+        let a = pos as f32 * freq;
         let (c, s) = (libm::cosf(a), libm::sinf(a));
+        *pair = if flags & BF16_SERVING != 0 {
+            let fix = BF16_SIN_FIX.iter().find(|f| f.0 == pos && f.1 == i);
+            (bf16_value(c), fix.map_or(bf16_value(s), |f| f.2))
+        } else {
+            (c, s)
+        };
+    }
+}
+
+/// HF rotate_half rounds each product and each sum in the BF16 serving profile.
+fn rope(flags: u32, v: &mut [f32], angles: &[(f32, f32)]) {
+    let half = v.len() / 2;
+    for (i, &(c, s)) in angles.iter().enumerate() {
         let (x1, x2) = (v[i], v[i + half]);
-        v[i] = x1 * c - x2 * s;
-        v[i + half] = x2 * c + x1 * s;
+        if flags & BF16_SERVING != 0 {
+            v[i] = bf16_value(bf16_value(x1 * c) - bf16_value(x2 * s));
+            v[i + half] = bf16_value(bf16_value(x2 * c) + bf16_value(x1 * s));
+        } else {
+            v[i] = x1 * c - x2 * s;
+            v[i + half] = x2 * c + x1 * s;
+        }
+    }
+}
+
+/// The decoder's `residual + hidden_states`, in BF16 with `BF16_SERVING`.
+fn residual(flags: u32, x: &mut [f32], o: &[f32]) {
+    let bf = flags & BF16_SERVING != 0;
+    for (a, &b) in x.iter_mut().zip(o) {
+        *a += b;
+        if bf {
+            *a = bf16_value(*a);
+        }
+    }
+}
+
+/// The MLP's `silu(gate) * up` into `g`; with `BF16_SERVING`, SiLU and the product each
+/// round to BF16.
+fn swiglu(flags: u32, g: &mut [f32], u: &[f32]) {
+    let bf = flags & BF16_SERVING != 0;
+    for (a, &b) in g.iter_mut().zip(u) {
+        if bf {
+            *a = bf16_value(bf16_value(*a / (1.0 + libm::expf(-*a))) * b);
+        } else {
+            *a = *a / (1.0 + libm::expf(-*a)) * b;
+        }
     }
 }
 
@@ -502,12 +649,12 @@ pub fn run_with(
             let mut logits = vec![0.0; h.n_out * h.vocab];
             for (i, out) in logits.chunks_mut(h.vocab).enumerate() {
                 let t = h.n_tok - h.n_out + i;
-                rmsnorm(dot, &mut xn, &x[t * h.dim..][..h.dim], norm, h.eps, &mut xw);
+                rmsnorm(h.flags, dot, &mut xn, &x[t * h.dim..][..h.dim], norm, h.eps, &mut xw);
                 a.set(&xn);
                 obs(0, &xn);
                 match (claimed.as_mut(), &emb) {
                     (Some(c), _) => c(0, out),
-                    (None, Some(emb)) => matmul(dot, qdot, out, &a, emb, h.dim),
+                    (None, Some(emb)) => matmul(h.projection_dot(dot), qdot, out, &a, emb, h.dim),
                     (None, None) => unreachable!(),
                 }
             }
@@ -553,9 +700,8 @@ fn layer(
     let wu = own.then(|| r.mat(h.hidden, dim, q8, group(h, dim)));
     let wd = own.then(|| r.mat(dim, h.hidden, q8, group(h, h.hidden)));
 
-    let inv_freq: Vec<f32> = (0..hd / 2)
-        .map(|i| 1.0 / libm::powf(h.rope_theta, (2 * i) as f32 / hd as f32))
-        .collect();
+    let inv_freq = inv_freq(h);
+    let mut angles = vec![(0.0, 0.0); inv_freq.len()];
     let scale = 1.0 / libm::sqrtf(hd as f32);
     let mut xw = vec![0u64; dim.max(qd).max(h.hidden) / 2];
     let mut xn = vec![0.0f32; dim];
@@ -574,12 +720,12 @@ fn layer(
         w,
     ) {
         (Some(c), _) => c(m, out),
-        (None, Some(w)) => matmul(dot, qdot, out, x, w, cols),
+        (None, Some(w)) => matmul(h.projection_dot(dot), qdot, out, x, w, cols),
         (None, None) => unreachable!(),
     };
 
     for t in 0..n {
-        rmsnorm(dot, &mut xn, &x[t * dim..][..dim], input_ln, h.eps, &mut xw);
+        rmsnorm(h.flags, dot, &mut xn, &x[t * dim..][..dim], input_ln, h.eps, &mut xw);
         ad.set(&xn);
         for m in 0..3 {
             obs(m, &xn);
@@ -587,6 +733,7 @@ fn layer(
         mm(0, &mut q[t * qd..][..qd], &ad, &wq, dim);
         mm(1, &mut k[t * kvd..][..kvd], &ad, &wk, dim);
         mm(2, &mut v[t * kvd..][..kvd], &ad, &wv, dim);
+        rope_angles(h.flags, t, &inv_freq, &mut angles);
         for (heads, weight, buf) in [
             (h.heads, q_norm, &mut q[t * qd..][..qd]),
             (h.kv_heads, k_norm, &mut k[t * kvd..][..kvd]),
@@ -594,8 +741,8 @@ fn layer(
             for j in 0..heads {
                 let head = &mut buf[j * hd..][..hd];
                 tmp.copy_from_slice(head);
-                rmsnorm(dot, head, &tmp, weight, h.eps, &mut hw);
-                rope(head, t, &inv_freq);
+                rmsnorm(h.flags, dot, head, &tmp, weight, h.eps, &mut hw);
+                rope(h.flags, head, &angles);
             }
         }
     }
@@ -652,6 +799,12 @@ fn layer(
                     attn[j * hd + i] = sum[0] as f32 * vs[c] * sa;
                 }
             }
+        } else if h.flags & BF16_SERVING != 0 {
+            for j in 0..h.heads {
+                let kv = (j / group) * hd;
+                let (out, qh) = (&mut attn[j * hd..][..hd], &q[t * qd + j * hd..][..hd]);
+                attention_bf16::attend(out, qh, &k[kv..], &v[kv..], kvd, t, h.prefill_len());
+            }
         } else {
             pack(&q[t * qd..][..qd], &mut qw);
             for j in 0..h.heads {
@@ -682,25 +835,19 @@ fn layer(
         obs(3, &attn);
         mm(3, &mut o, &aq, &wo, qd);
         let xt = &mut x[t * dim..][..dim];
-        for (a, &b) in xt.iter_mut().zip(&o) {
-            *a += b;
-        }
+        residual(h.flags, xt, &o);
 
-        rmsnorm(dot, &mut xn, xt, post_ln, h.eps, &mut xw);
+        rmsnorm(h.flags, dot, &mut xn, xt, post_ln, h.eps, &mut xw);
         ad.set(&xn);
         obs(4, &xn);
         obs(5, &xn);
         mm(4, &mut g, &ad, &wg, dim);
         mm(5, &mut u, &ad, &wu, dim);
-        for (a, &b) in g.iter_mut().zip(&u) {
-            *a = *a / (1.0 + libm::expf(-*a)) * b;
-        }
+        swiglu(h.flags, &mut g, &u);
         ah.set(&g);
         obs(6, &g);
         mm(6, &mut o, &ah, &wd, h.hidden);
-        for (a, &b) in xt.iter_mut().zip(&o) {
-            *a += b;
-        }
+        residual(h.flags, xt, &o);
     }
     x
 }
@@ -717,7 +864,92 @@ pub fn argmax(v: &[f32]) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn packed_bf16_projection_uses_the_serving_reduction() {
+        let mut weights = [0.0; 64];
+        weights[0] = 16_777_216.0;
+        weights[1] = 1.0;
+        weights[32] = -16_777_216.0;
+        let mut w = [0; 32];
+        let mut x = [0; 32];
+        pack(&weights, &mut w);
+        pack(&[1.0; 64], &mut x);
+        assert_eq!(dot_soft(&w, &x, 64), 0.0);
+        assert_eq!(bf16_dot_packed(&w, &x, 64), 1.0);
+    }
+
+    #[test]
+    fn bf16_norm_matches_torch_arm64() {
+        // Whole-vector BF16 fingerprints from PyTorch 2.13.0 CPU on arm64.
+        for (width, expected) in [(128, 0x6339754752b13ffcu64), (2560, 0xd6c12915187909b7)] {
+            let x: Vec<_> = (0..width).map(|i| ((i * 37 % 101) as f32 - 50.0) / 37.0).collect();
+            let w: Vec<_> = (0..width).map(|i| ((i * 11 % 17) + 8) as f32 / 16.0).collect();
+            let mut out = vec![0.0; width];
+            bf16_rmsnorm(&mut out, &x, &w, 1e-6);
+            let hash = out.iter().fold(0xcbf29ce484222325u64, |h, y| {
+                (h ^ u64::from(y.to_bits() >> 16)).wrapping_mul(0x100000001b3)
+            });
+            assert_eq!(hash, expected);
+        }
+    }
+
     use super::*;
+
+    /// FNV-1a over the BF16 bits, as the PyTorch fingerprints were taken.
+    fn bf16_hash(v: &[f32]) -> u64 {
+        v.iter().fold(0xcbf29ce484222325u64, |h, y| {
+            (h ^ u64::from(y.to_bits() >> 16)).wrapping_mul(0x100000001b3)
+        })
+    }
+
+    /// `((i * a % b) - c) / d` in `f32`, rounded to BF16.
+    fn bf16_ramp(n: usize, a: usize, b: usize, c: f32, d: f32) -> Vec<f32> {
+        (0..n).map(|i| bf16_value(((i * a % b) as f32 - c) / d)).collect()
+    }
+
+    // Fingerprints below: transformers 5.15.1 Qwen3 modules on PyTorch 2.13.0 CPU, arm64.
+    #[test]
+    fn bf16_rope_matches_torch_arm64() {
+        let h = Header { kind: LAYER, dim: 2560, hidden: 9728, heads: 32, kv_heads: 8,
+            head_dim: 128, vocab: 151936, n_tok: 1, rope_theta: 1e6, eps: 1e-6,
+            flags: BF16_SERVING, n_out: 0 };
+        let inv = inv_freq(&h);
+        let mut angles = vec![(0.0, 0.0); inv.len()];
+        // Rotating ones by zeros reads out the BF16 cos and sin: the whole table of
+        // max_position_embeddings positions.
+        let mut table = vec![0.0; 40960 * 128];
+        for (p, row) in table.chunks_mut(128).enumerate() {
+            row[..64].fill(1.0);
+            rope_angles(BF16_SERVING, p, &inv, &mut angles);
+            rope(BF16_SERVING, row, &angles);
+        }
+        assert_eq!(bf16_hash(&table), 0xa2a58a382cad2e2e);
+        // apply_rotary_pos_emb on 64 positions of 8 heads.
+        let mut k = bf16_ramp(64 * 8 * 128, 37, 211, 105.0, 13.0);
+        for (m, head) in k.chunks_mut(128).enumerate() {
+            rope_angles(BF16_SERVING, m / 8, &inv, &mut angles);
+            rope(BF16_SERVING, head, &angles);
+        }
+        assert_eq!(bf16_hash(&k), 0x13394d07c3274f70);
+    }
+
+    #[test]
+    fn bf16_residual_and_mlp_match_torch_arm64() {
+        let mut a = bf16_ramp(5120, 37, 101, 50.0, 7.0);
+        let b: Vec<_> = (0..5120)
+            .map(|i| bf16_value(((i * 11 % 97) as f32 - 48.0) / 5.0 * libm::exp2f((i % 41) as f32 - 20.0)))
+            .collect();
+        residual(BF16_SERVING, &mut a, &b);
+        assert_eq!(bf16_hash(&a), 0x315e74c6682ee188);
+        // SiLU of every BF16 value; PyTorch returns NaN as 0x7fc0.
+        let mut s: Vec<_> = (0..1u32 << 16).map(|c| f32::from_bits(c << 16)).collect();
+        swiglu(BF16_SERVING, &mut s, &[1.0; 1 << 16]);
+        s.iter_mut().filter(|y| y.is_nan()).for_each(|y| *y = f32::from_bits(0x7fc00000));
+        assert_eq!(bf16_hash(&s), 0x8c3d3fa1a5b83a07);
+        let mut g = bf16_ramp(2 * 9728, 37, 211, 105.0, 17.0);
+        swiglu(BF16_SERVING, &mut g, &bf16_ramp(2 * 9728, 13, 199, 99.0, 23.0));
+        assert_eq!(bf16_hash(&g), 0x9d1ef288d2327ec4);
+    }
 
     fn pack2(v: &[f32]) -> Vec<u64> {
         v.chunks(2)
@@ -815,9 +1047,8 @@ pub fn run_layer_batched(input: &[u8], dot: DotFn, claimed: ClaimedBatch) -> Vec
     let k_norm = r.floats(hd);
     let post_ln = r.floats(dim);
 
-    let inv_freq: Vec<f32> = (0..hd / 2)
-        .map(|i| 1.0 / libm::powf(h.rope_theta, (2 * i) as f32 / hd as f32))
-        .collect();
+    let inv_freq = inv_freq(&h);
+    let mut angles = vec![(0.0, 0.0); inv_freq.len()];
     let scale = 1.0 / libm::sqrtf(hd as f32);
     let mut xw = vec![0u64; dim.max(qd).max(h.hidden) / 2];
     let mut xn = vec![0.0f32; n * dim];
@@ -828,10 +1059,11 @@ pub fn run_layer_batched(input: &[u8], dot: DotFn, claimed: ClaimedBatch) -> Vec
     let mut hw = vec![0u64; hd / 2];
 
     for t in 0..n {
-        rmsnorm(dot, &mut xn[t * dim..][..dim], &x[t * dim..][..dim], input_ln, h.eps, &mut xw);
+        rmsnorm(h.flags, dot, &mut xn[t * dim..][..dim], &x[t * dim..][..dim], input_ln, h.eps, &mut xw);
     }
     claimed(0, &xn, &mut [&mut q, &mut k, &mut v]);
     for t in 0..n {
+        rope_angles(h.flags, t, &inv_freq, &mut angles);
         for (heads, weight, buf) in [
             (h.heads, q_norm, &mut q[t * qd..][..qd]),
             (h.kv_heads, k_norm, &mut k[t * kvd..][..kvd]),
@@ -839,8 +1071,8 @@ pub fn run_layer_batched(input: &[u8], dot: DotFn, claimed: ClaimedBatch) -> Vec
             for j in 0..heads {
                 let head = &mut buf[j * hd..][..hd];
                 tmp.copy_from_slice(head);
-                rmsnorm(dot, head, &tmp, weight, h.eps, &mut hw);
-                rope(head, t, &inv_freq);
+                rmsnorm(h.flags, dot, head, &tmp, weight, h.eps, &mut hw);
+                rope(h.flags, head, &angles);
             }
         }
     }
@@ -856,6 +1088,14 @@ pub fn run_layer_batched(input: &[u8], dot: DotFn, claimed: ClaimedBatch) -> Vec
     let mut qw = vec![0u64; qd / 2];
     let mut attn = vec![0.0f32; n * qd];
     for t in 0..n {
+        if h.flags & BF16_SERVING != 0 {
+            for j in 0..h.heads {
+                let kv = (j / group) * hd;
+                let (out, qh) = (&mut attn[t * qd + j * hd..][..hd], &q[t * qd + j * hd..][..hd]);
+                attention_bf16::attend(out, qh, &k[kv..], &v[kv..], kvd, t, h.prefill_len());
+            }
+            continue;
+        }
         pack(&q[t * qd..][..qd], &mut qw);
         for j in 0..h.heads {
             let kv = (j / group) * hd;
@@ -888,21 +1128,15 @@ pub fn run_layer_batched(input: &[u8], dot: DotFn, claimed: ClaimedBatch) -> Vec
     drop(attn);
     for t in 0..n {
         let xt = &mut x[t * dim..][..dim];
-        for (a, &b) in xt.iter_mut().zip(&o[t * dim..][..dim]) {
-            *a += b;
-        }
-        rmsnorm(dot, &mut xn[t * dim..][..dim], xt, post_ln, h.eps, &mut xw);
+        residual(h.flags, xt, &o[t * dim..][..dim]);
+        rmsnorm(h.flags, dot, &mut xn[t * dim..][..dim], xt, post_ln, h.eps, &mut xw);
     }
     let mut g = vec![0.0f32; n * h.hidden];
     let mut u = vec![0.0f32; n * h.hidden];
     claimed(2, &xn, &mut [&mut g, &mut u]);
-    for (a, &b) in g.iter_mut().zip(&u) {
-        *a = *a / (1.0 + libm::expf(-*a)) * b;
-    }
+    swiglu(h.flags, &mut g, &u);
     drop(u);
     claimed(3, &g, &mut [&mut o]);
-    for (a, &b) in x.iter_mut().zip(&o) {
-        *a += b;
-    }
+    residual(h.flags, &mut x, &o);
     x
 }

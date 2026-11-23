@@ -7,3 +7,8 @@ publish = false
 [dependencies]
 pci-stages = { path = "../stages" }
 ziskos = { workspace = true }
+
+[[bin]]
+test = false
+name = "pci-head-guest"
+path = "src/main.rs"

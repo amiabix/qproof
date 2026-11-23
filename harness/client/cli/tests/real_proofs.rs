@@ -52,7 +52,7 @@ fn sharded_head_matches(a36_file: &str, logits_file: &str, r: u32, reply: &[u32]
         let rec = head::encode([1; 32], [2; 32], [3; 32], 9, k, r, &a36, &norm, &tied, &tree);
         let o = if dotf8 {
             let mut kern = pci_dotf8::Kernel::new(pci_dotf8::SoftDotF8);
-            let mut f = |x: &[u32], m: &[u8], out: &mut [f32]| kern.project(&pci_dotf8::Prepared::new(x, DIM as usize), m, out);
+            let mut f = |x: &[u32], m: &[u8], out: &mut [f32]| kern.project_group_bf16(x, DIM as usize, &[m], &mut [out]);
             head::execute_with(&rec, sha, &mut f).unwrap()
         } else {
             head::execute(&rec, sha).unwrap()
@@ -183,4 +183,30 @@ fn real_partial_bundle_is_not_accepted() {
     let r = verify_bundle(&Zisk { pins: &pins }, &pins, &req, &b);
     assert!(matches!(r, Err(Reject::Roster(_))), "{r:?}");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Exercise the production join on public bytes from local ELF executions.
+/// This tests the arithmetic and wiring before paying for proof generation.
+#[test]
+#[ignore = "requires a prepared case and emulator outputs from all guest programs"]
+fn joins_emulated_qwen_transcript() {
+    let case = PathBuf::from(std::env::var_os("PCI_EMULATED_CASE").expect("PCI_EMULATED_CASE"));
+    let layers = PathBuf::from(std::env::var_os("PCI_EMULATED_LAYERS").expect("PCI_EMULATED_LAYERS"));
+    let pins = Pins::from_json(&json(&case.join("release.json"))).unwrap();
+    let request = ClientRequest::from_json(&json(&case.join("request.json"))).unwrap();
+    let bundle = Bundle::load(&case.join("bundle")).unwrap();
+    let receipts: Vec<_> = bundle.children.iter().map(|c| &c.receipt).collect();
+    let stmt = join(&pins, &request, &bundle.reply, &receipts, &mut |i, kind, digest| {
+        let file = match kind {
+            Kind::Embed => case.join("records/embed.output"),
+            Kind::Layer => layers.join(format!("layer{:02}.output", i - 1)),
+            Kind::Head => case.join(format!("records/head-{:05}.output", i - 1 - pci_receipts::LAYERS)),
+        };
+        let bytes = std::fs::read(file).unwrap();
+        assert_eq!(bytes.len(), 256);
+        assert_eq!(&bytes[..32], digest, "child {i}");
+        assert!(bytes[32..].iter().all(|&b| b == 0));
+        Ok(())
+    }).unwrap();
+    assert_eq!(stmt.predicted, bundle.reply);
 }

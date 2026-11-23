@@ -116,7 +116,7 @@ fn x(t: usize) -> Vec<f32> {
 fn full_size_batched_and_per_position_equal_reference_and_reject_alike() {
     let t = 3;
     let tensors = synthetic(0x1234_5678_9abc_def1);
-    let record = encode([1; 32], [2; 32], [3; 32], 4, &x(t), &tensors);
+    let record = encode([1; 32], [2; 32], [3; 32], 4, 2, &x(t), &tensors);
     let reference = execute(&record, sha).expect("honest record");
     for (name, o) in [("batched", batched(&record)), ("per-position", per_position(&record))] {
         let o = o.expect(name);
@@ -126,7 +126,7 @@ fn full_size_batched_and_per_position_equal_reference_and_reject_alike() {
         assert_eq!(bits(&o.output), bits(&reference.output), "{name} output bits");
     }
     // The reference batched kernel through execute_batched as well.
-    let r = execute_batched(&record, sha, &mut project_batch_reference).unwrap();
+    let r = execute_batched(&record, sha, &mut project_batch_bf16).unwrap();
     assert!(r.receipt == reference.receipt);
 
     // Mutations: same verdict (and same receipt when accepted) as the reference. Each
@@ -141,6 +141,9 @@ fn full_size_batched_and_per_position_equal_reference_and_reject_alike() {
         ("positions", Box::new(|r| r[108] ^= 1)),
         ("profile eps", Box::new(|r| r[112 + 36] ^= 1)),
         ("profile flags", Box::new(|r| r[112 + 40] ^= 4)),
+        ("predictions 2 to 3", Box::new(|r| r[112 + 44] ^= 1)),
+        ("predictions over positions", Box::new(|r| r[112 + 44] ^= 4)),
+        ("predictions zero", Box::new(|r| r[112 + 44] = 0)),
         ("activation bit", Box::new(|r| r[FIXED + 5] ^= 0x10)),
         ("activation to inf", Box::new(|r| r[FIXED..FIXED + 4].copy_from_slice(&f32::INFINITY.to_le_bytes()))),
         ("first weight byte", Box::new(move |r| r[w0] ^= 1)),

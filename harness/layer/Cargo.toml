@@ -1,0 +1,12 @@
+[package]
+name = "pci-layer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+pci-receipts = { path = "../receipts" }
+qwen-common = { path = "../../common" }
+
+[dev-dependencies]
+sha2 = "0.10.9"

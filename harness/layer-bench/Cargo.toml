@@ -1,0 +1,15 @@
+[package]
+name = "pci-layer-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Native driver for the batched dot_f8 layer: bitwise cross-checks of the bound layer
+# (reference vs batched vs per-position kernel) and sample inputs for the projection
+# benchmark guest in harness/f8-guests.
+[dependencies]
+pci-dotf8 = { path = "../dotf8" }
+pci-layer = { path = "../layer" }
+pci-receipts = { path = "../receipts" }
+qwen-common = { path = "../../common" }
+sha2 = "0.10.9"

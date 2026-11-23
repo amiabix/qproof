@@ -1,0 +1,9 @@
+[package]
+name = "pci-layer-guest"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+pci-layer = { path = "../layer" }
+ziskos = { workspace = true }

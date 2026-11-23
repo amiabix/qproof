@@ -1,0 +1,13 @@
+# Client-owned crates (embedding and head children, bundle verifier). A
+# separate workspace so the shared root Cargo.toml/Cargo.lock, which the
+# layer work edits, is never touched. Path dependencies reach the shared
+# receipts/layer/common crates read-only.
+[workspace]
+members = ["stages", "embed-guest", "head-guest", "cli"]
+resolver = "2"
+
+[workspace.dependencies]
+ziskos = { git = "https://github.com/amiabix/zisk", rev = "8566a014b9f6b08c5da34bb7408f2d48eac3bb67" }
+
+[profile.release]
+opt-level = 3

@@ -1,0 +1,35 @@
+[workspace]
+
+# ZisK guests on the dot_f8 toolchain (~/dot-f8-sm-20261120/source, the ziskemu/prover
+# lineage that implements the DotF8 precompile). Own workspace: the root workspace pins a
+# ziskos without dot_f8. All three bins use the one canonical kernel (harness/dotf8)
+# through the one syscall backend (src/lib.rs).
+[package]
+name = "pci-f8-guests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+pci-dotf8 = { path = "../dotf8" }
+pci-layer = { path = "../layer" }
+ziskos = { path = "/home/abix/dot-f8-sm-20261120/source/ziskos/entrypoint" }
+
+[[bin]]
+name = "layer-batched"
+path = "src/bin/layer_batched.rs"
+
+[[bin]]
+name = "layer-perpos"
+path = "src/bin/layer_perpos.rs"
+
+[[bin]]
+name = "projection-sample"
+path = "src/bin/projection_sample.rs"
+
+[profile.release]
+opt-level = 3
+
+[[bin]]
+name = "layer-bindonly"
+path = "src/bin/layer_bindonly.rs"

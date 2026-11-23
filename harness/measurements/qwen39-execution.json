@@ -1,0 +1,535 @@
+{
+  "consumed_ids": [
+    12522,
+    5193,
+    264,
+    882,
+    11,
+    304,
+    264,
+    2613,
+    14126,
+    518,
+    279,
+    6821,
+    315,
+    264,
+    6319,
+    13638,
+    11,
+    1052,
+    12163,
+    264,
+    22208,
+    3743,
+    6941,
+    47290,
+    879,
+    10245,
+    311,
+    13186,
+    323,
+    6997,
+    501,
+    2513,
+    13,
+    3776,
+    1899,
+    11,
+    1340,
+    1730,
+    264
+  ],
+  "prompt_count": 32,
+  "predictions": 8,
+  "arms": {
+    "original_floatdot": {
+      "steps": 32789469461,
+      "cost": 809902301109087,
+      "predicted": [
+        13,
+        3776,
+        1899,
+        11,
+        1340,
+        1730,
+        264,
+        25382
+      ],
+      "stages": [
+        {
+          "stage": "embed",
+          "steps": 2136490,
+          "cost": 581275428,
+          "output": "0e7b49c9af3e465b00c9a7d2d398fa0135b30ea50f8c132316f97c63e2080a39"
+        },
+        {
+          "stage": "layer00",
+          "steps": 784853196,
+          "cost": 22004506231011,
+          "output": "6755afd80b23eda54e5c31a04d9004b2a6edb7e18fe36060071876e31300eb08"
+        },
+        {
+          "stage": "layer01",
+          "steps": 976163571,
+          "cost": 22022793967510,
+          "output": "40e2eee9980d247526766f51f388a72fccceed5be2fe2bcb3688bc98417fab2f"
+        },
+        {
+          "stage": "layer02",
+          "steps": 976787034,
+          "cost": 22022852746931,
+          "output": "cc26bb9e9a6608575fe3577eaaa2d346d6674873c698ce001071b981ea9e2b33"
+        },
+        {
+          "stage": "layer03",
+          "steps": 976267196,
+          "cost": 22022805819358,
+          "output": "c98b0290cbe3895541d1d82912b3bab8e7a039d4990076e80c6c526c692f19e8"
+        },
+        {
+          "stage": "layer04",
+          "steps": 968321227,
+          "cost": 22022039379582,
+          "output": "90b1289022e739effe30fa797fe2f4f0e230728e6254f6e8b2df41f114828010"
+        },
+        {
+          "stage": "layer05",
+          "steps": 905642148,
+          "cost": 22016039094730,
+          "output": "6423d171eee3ac4226cb23731a928f6320d03f760d71d79b5cba24d49f23c2ff"
+        },
+        {
+          "stage": "layer06",
+          "steps": 895499185,
+          "cost": 22015064581403,
+          "output": "2c4bb10e72e22f21159e4f1bdcb5c0296c1c887057ab545d0d68610f4bd9df77"
+        },
+        {
+          "stage": "layer07",
+          "steps": 902946061,
+          "cost": 22015774141585,
+          "output": "80a00d12e9ca46f402661f1eaa74d4c130bbcbfb2fa5e307f2493caa400159ef"
+        },
+        {
+          "stage": "layer08",
+          "steps": 879662176,
+          "cost": 22013544152797,
+          "output": "8cf2cb07b5f50ab591c0a1cfbfa281bd8883fd3d57f767bd4381b4d458010e3a"
+        },
+        {
+          "stage": "layer09",
+          "steps": 910350182,
+          "cost": 22016477808075,
+          "output": "c9d863044798551fb8ad15a9eb845022a7bf112ef137c9f70c49f77c3a713b59"
+        },
+        {
+          "stage": "layer10",
+          "steps": 905474231,
+          "cost": 22016008312784,
+          "output": "9b214b45b7c22f1f5bc3342feb3f2ed3d2cb45b8aecb0421914c123243bd59c8"
+        },
+        {
+          "stage": "layer11",
+          "steps": 892224232,
+          "cost": 22014742511979,
+          "output": "dd06e983fee5983824dbeacd957ed39bfb8425d1bb36cdeea8f6c62f50437de9"
+        },
+        {
+          "stage": "layer12",
+          "steps": 882699783,
+          "cost": 22013834860529,
+          "output": "a2fec903bdc4c6db8dba7a7dc9d251f5c0b5d1ff2977c08517a5d8ed658c8f2f"
+        },
+        {
+          "stage": "layer13",
+          "steps": 876873603,
+          "cost": 22013282418963,
+          "output": "4e550526db5a5d81706bd75b4c9eebbc66d6d33983e6fd5e9aad58b5309ddbb7"
+        },
+        {
+          "stage": "layer14",
+          "steps": 878515932,
+          "cost": 22013436075582,
+          "output": "6a6ab5f81b88be910e2a8160f8dd0fcd5610921ae64851b930f40095899d2966"
+        },
+        {
+          "stage": "layer15",
+          "steps": 865801027,
+          "cost": 22012225633853,
+          "output": "d3f26c5767f93ee15dd713f6a51600a9278d69565d3b01bd4cc356b8a0e98345"
+        },
+        {
+          "stage": "layer16",
+          "steps": 874569293,
+          "cost": 22013061072393,
+          "output": "fffccd9013db210d8245f4dd433733eff467e6f32b6e154e4165795bc57f4829"
+        },
+        {
+          "stage": "layer17",
+          "steps": 864865162,
+          "cost": 22012135578742,
+          "output": "9312f44dcd6bf3b555993efe46306d191f70f2a994bc8ed913a0823df7cd45fb"
+        },
+        {
+          "stage": "layer18",
+          "steps": 864976441,
+          "cost": 22012143629286,
+          "output": "cf6500ca42b0d92315d55ec34243074095592bf07d8a756066b37f2bd7bd8439"
+        },
+        {
+          "stage": "layer19",
+          "steps": 868490550,
+          "cost": 22012479702494,
+          "output": "94968ce736ac16897263c23fe5268e0413f69a8bedd8dd197362564a32031f8e"
+        },
+        {
+          "stage": "layer20",
+          "steps": 873453523,
+          "cost": 22012953034045,
+          "output": "3ae9d000ac7ede054f683256ca631bd98d50d1e72d1fedc1c623f8d7ed0bd137"
+        },
+        {
+          "stage": "layer21",
+          "steps": 879836999,
+          "cost": 22013561111952,
+          "output": "c2c3048e1feb91073267c3d183bc4d06a7bccfe8558b59d23d285b094a3646be"
+        },
+        {
+          "stage": "layer22",
+          "steps": 893800648,
+          "cost": 22014898880711,
+          "output": "f8c782a4a2a9b2e6914485efe4c55cc7a12050fc0822903268f55969d2938241"
+        },
+        {
+          "stage": "layer23",
+          "steps": 904867244,
+          "cost": 22015958586783,
+          "output": "735279d9ec28d9542a4f83ce260cdebed93cbf282c7ea592cb14af5709d0d3bf"
+        },
+        {
+          "stage": "layer24",
+          "steps": 909782399,
+          "cost": 22016424537592,
+          "output": "957f1d8d6159eb1bdbcfe0016b0d64753b73da5031086d3cc0ee5d4960eba65e"
+        },
+        {
+          "stage": "layer25",
+          "steps": 914451362,
+          "cost": 22016869583056,
+          "output": "3c9dd32b48127044a4803f3b24ce303d4b8c5eb0a5a9e3cee87a67b93756783c"
+        },
+        {
+          "stage": "layer26",
+          "steps": 924562406,
+          "cost": 22017836478319,
+          "output": "a0540b09e726563bdc3b27c239f4c35bdfe9f9555d14a54b7955224967c2fcde"
+        },
+        {
+          "stage": "layer27",
+          "steps": 928112851,
+          "cost": 22018180368594,
+          "output": "9c27b05ee27dabd6d3a858c732ec58060e7e12f037e6557ce99b260823cc9d76"
+        },
+        {
+          "stage": "layer28",
+          "steps": 931427248,
+          "cost": 22018500020847,
+          "output": "c2a284a2be23800f72b11d4f1508a36d43a8cc16e371fd49064a48f0ede1dbd1"
+        },
+        {
+          "stage": "layer29",
+          "steps": 938445729,
+          "cost": 22019166716426,
+          "output": "ef7a8e8bb9b289400be34468887b7aa87743868325bbe689bb1aa5717cf7d388"
+        },
+        {
+          "stage": "layer30",
+          "steps": 937166485,
+          "cost": 22019045024164,
+          "output": "dede86f0a90adda2048c402eeb3efa1d9773efa4166363591f2a0e6eee54d306"
+        },
+        {
+          "stage": "layer31",
+          "steps": 930120712,
+          "cost": 22018376201640,
+          "output": "5cf93456e30fe1c99c9cfca88212d95b0fc05b840606b2605cd5c9056ac9dfd1"
+        },
+        {
+          "stage": "layer32",
+          "steps": 924686034,
+          "cost": 22017858364291,
+          "output": "e120e1a5738ffd5acb8002b50a27c8dc5c6de93fdc7ea508618c39e12af41c1d"
+        },
+        {
+          "stage": "layer33",
+          "steps": 924348067,
+          "cost": 22017827833955,
+          "output": "4eaf3bf2dd1b59b93f339f1ccb6c3e4bd3e69550f9b16a5ae5923a6b36c42008"
+        },
+        {
+          "stage": "layer34",
+          "steps": 935730616,
+          "cost": 22018914415307,
+          "output": "3cd9f5bbc4406eececfb710d8d2fc0a8315881e96e4f09ed351997c22e6a7d7c"
+        },
+        {
+          "stage": "layer35",
+          "steps": 957485008,
+          "cost": 22020998739357,
+          "output": "cea002c3ca251ca5d0db769c85669bff4a22501e51fd767d3f12b39e67a6f508"
+        },
+        {
+          "stage": "head",
+          "steps": 128073410,
+          "cost": 17319102217033,
+          "output": "811b27cb93604185c83532af315be63cbf94bd51712134caa837f1eef518a02a"
+        }
+      ]
+    },
+    "quantized_dot_f8": {
+      "steps": 44352473326,
+      "cost": 7677350849543,
+      "predicted": [
+        13,
+        3776,
+        1899,
+        11,
+        1340,
+        1730,
+        264,
+        25382
+      ],
+      "stages": [
+        {
+          "stage": "embed",
+          "steps": 1755832,
+          "cost": 558019583,
+          "output": "0e7b49c9af3e465b00c9a7d2d398fa0135b30ea50f8c132316f97c63e2080a39"
+        },
+        {
+          "stage": "layer00",
+          "steps": 1102136044,
+          "cost": 198805845564,
+          "output": "588dc8aee557238459bd78e9bd07b3157bd1d7c773474ba4f47ac489700a7a96"
+        },
+        {
+          "stage": "layer01",
+          "steps": 1293715761,
+          "cost": 217134391043,
+          "output": "f497502612d0e14384ccd27b64ecd44a71d692f9d418fdd9f95216ff496f1f1d"
+        },
+        {
+          "stage": "layer02",
+          "steps": 1294116186,
+          "cost": 217175573668,
+          "output": "51763988e2a21c890ec78c8eb7bdff79acbb634c66cfbe28a644f595a3b0db58"
+        },
+        {
+          "stage": "layer03",
+          "steps": 1293495336,
+          "cost": 217106366793,
+          "output": "c6a28bb00e44a1c099689a7910a97b4fffcc7167d6ff1a636cc1eca3729fe43d"
+        },
+        {
+          "stage": "layer04",
+          "steps": 1286232433,
+          "cost": 216416269219,
+          "output": "0af2716f9b271e01107e7b3c116dfee9ffb56966679bc2d7fb7e9d378bb5380d"
+        },
+        {
+          "stage": "layer05",
+          "steps": 1223208224,
+          "cost": 210364302656,
+          "output": "cdf2b8901d6adb587b2e9c295fa92a6e934bc53a9008325e1753d62d899cc5a5"
+        },
+        {
+          "stage": "layer06",
+          "steps": 1212538115,
+          "cost": 209338645056,
+          "output": "9b659a0b5f297b60f25e04ed06b9885ed2ea905f2ff022b585a14d362baeaa53"
+        },
+        {
+          "stage": "layer07",
+          "steps": 1219820095,
+          "cost": 210027272848,
+          "output": "9036265d4365ceb0e17a93e7157a465f42c4e0de7639cd6c9b74cc96afdef5a9"
+        },
+        {
+          "stage": "layer08",
+          "steps": 1197174310,
+          "cost": 207862766282,
+          "output": "45124a38a3bf845e73cb354623a48af428bd11a6e1cdf0f1b6c726c7b526e552"
+        },
+        {
+          "stage": "layer09",
+          "steps": 1227915977,
+          "cost": 210805089087,
+          "output": "8c5c4309bc585cd63e5822af4aba09af6067385536fc0dc5bf7172c8ce88ad5e"
+        },
+        {
+          "stage": "layer10",
+          "steps": 1222083388,
+          "cost": 210243567885,
+          "output": "b112f4cc72cc81d05bb50159ba7bcb40ae17a3f03e7c16616507b12d3e76de66"
+        },
+        {
+          "stage": "layer11",
+          "steps": 1209894607,
+          "cost": 209081803996,
+          "output": "0053a8df8b2ff380772a91e0c8aea1b96e6e52c9594f285c8cafb88ee2b5dd4c"
+        },
+        {
+          "stage": "layer12",
+          "steps": 1200095497,
+          "cost": 208145134038,
+          "output": "8be79ed3a810ab4e9b25f695d3dd2dc5405a5f822adaff6ef56dfb8477df27c1"
+        },
+        {
+          "stage": "layer13",
+          "steps": 1193933462,
+          "cost": 207564735599,
+          "output": "415cfb4d1e7ead1664f0d36df8a66a4bb10e8b30166c8268e89b9749f735a703"
+        },
+        {
+          "stage": "layer14",
+          "steps": 1195048841,
+          "cost": 207660520965,
+          "output": "6a5aadd4c170216f736f003584527400d37b445190565e38e748483a0c0da4d2"
+        },
+        {
+          "stage": "layer15",
+          "steps": 1182324949,
+          "cost": 206440327116,
+          "output": "84c229b89288a901987dbc266f2da1377c6eb3afe763b7c4a3bf90284d3316f0"
+        },
+        {
+          "stage": "layer16",
+          "steps": 1191453505,
+          "cost": 207317319548,
+          "output": "c4d8210c88c52f7c8644e4ae9cc2f83c5baa24eb8e26bd3bb0c101fd388655f0"
+        },
+        {
+          "stage": "layer17",
+          "steps": 1182049770,
+          "cost": 206424401563,
+          "output": "61b598b1b090a591fb8eca75d2889195788eb6210e60176dd87a4352d1dcc5c3"
+        },
+        {
+          "stage": "layer18",
+          "steps": 1182080531,
+          "cost": 206423643394,
+          "output": "d4b87540f35bd8c7a8cae93dc575c41b5cb371cee8059612c5ab761bd940bd0d"
+        },
+        {
+          "stage": "layer19",
+          "steps": 1186065142,
+          "cost": 206813896321,
+          "output": "234104f203194c7fbf1550c29df3518d76c056a215b8be664de100c20c6880f5"
+        },
+        {
+          "stage": "layer20",
+          "steps": 1190492104,
+          "cost": 207234685045,
+          "output": "cc9487e36608271a06e308feeec06af95bdea87baa0919775812bcb9805d7a01"
+        },
+        {
+          "stage": "layer21",
+          "steps": 1196602165,
+          "cost": 207813205026,
+          "output": "c434e6083f0a9c9cc2aa973319ff4bd7f0c73f032405660dd09404e17547e594"
+        },
+        {
+          "stage": "layer22",
+          "steps": 1210681918,
+          "cost": 209152537667,
+          "output": "56acbd220546efec4b8f56429d857fe85acc878618266e1757dd066c0af1368c"
+        },
+        {
+          "stage": "layer23",
+          "steps": 1222055417,
+          "cost": 210248199870,
+          "output": "24a53a3bfe8e47bdbe9d9d1b07e5af3bb1be2b35fabea1f74bb304644943de4b"
+        },
+        {
+          "stage": "layer24",
+          "steps": 1226882977,
+          "cost": 210705932752,
+          "output": "390759d95a57131707313e8a8b19ad7566866c09a414aad2d6350e3bb44cfe10"
+        },
+        {
+          "stage": "layer25",
+          "steps": 1231504951,
+          "cost": 211141134590,
+          "output": "3ba1b3e75906d15a5c12458014b2d49c47365e44ef2164a64cec0a385152a41a"
+        },
+        {
+          "stage": "layer26",
+          "steps": 1241671684,
+          "cost": 212112260155,
+          "output": "b3126483d6953fa98f83d529f0c8fcfa13e8c27821a8e06631cfd919298fb091"
+        },
+        {
+          "stage": "layer27",
+          "steps": 1245135246,
+          "cost": 212453542403,
+          "output": "993c767924c2e8e5faa87c5effd5286497873b3d7c7e81004bba1bc4118c15c4"
+        },
+        {
+          "stage": "layer28",
+          "steps": 1248473603,
+          "cost": 212775664538,
+          "output": "645d667db27e7cc7da254d8596660ce72565038e47b256a822a443e5a8921304"
+        },
+        {
+          "stage": "layer29",
+          "steps": 1255714535,
+          "cost": 213461255819,
+          "output": "973f676d179a7a2ee1549a0791ac8e6b2aaa10a3c60c141ec55932ba2ae50f5b"
+        },
+        {
+          "stage": "layer30",
+          "steps": 1254170441,
+          "cost": 213307193346,
+          "output": "c2f1082121b6289b18512f789d31d9a69613ab8acfa75582a22b88ce01725ba4"
+        },
+        {
+          "stage": "layer31",
+          "steps": 1247212272,
+          "cost": 212653795779,
+          "output": "e24f254a586d2ac6272ff9697fd2e6b6adb979f8a98b8b5ddb1324db4f1bc1cc"
+        },
+        {
+          "stage": "layer32",
+          "steps": 1241961205,
+          "cost": 212160190633,
+          "output": "3fa87c90a2d59dd0ebbd23bd912244c280b30dcc302f657b34a55d9be632635c"
+        },
+        {
+          "stage": "layer33",
+          "steps": 1241606286,
+          "cost": 212129357566,
+          "output": "168995da803d172ed67ace41ae723425aa12aa8f2aef0e50101637808e491eed"
+        },
+        {
+          "stage": "layer34",
+          "steps": 1252412416,
+          "cost": 213142788675,
+          "output": "3e0e15c6dda0383ef1db0c5d71585f488973571e154338df4872d273f2067d07"
+        },
+        {
+          "stage": "layer35",
+          "steps": 1274883646,
+          "cost": 215308781817,
+          "output": "98797fa461d704f28b72e308f28b2cbadfd5ee9a0d888ea76a6ae21d694c918f"
+        },
+        {
+          "stage": "head",
+          "steps": 273874455,
+          "cost": 99840431638,
+          "output": "01f1cb650a580c8a1423b421c96c91bc3e557aa41478e07494eae557eced23e5"
+        }
+      ]
+    }
+  }
+}

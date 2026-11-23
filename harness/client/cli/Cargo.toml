@@ -1,0 +1,19 @@
+[package]
+name = "pci-client"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+pci-stages = { path = "../stages" }
+pci-receipts = { path = "../../receipts" }
+pci-layer = { path = "../../layer" }
+serde_json = "1"
+sha2 = "0.10.9"
+# The native verifier generated from the pinned proving key
+# (gpu-final-8x/setup-rec, blake3 family). Referenced read-only in place.
+proofman-fields = "1.4.0-alpha"
+zisk-verifier = { path = "/home/abix/dot-f8-sm-20261120/gpu-final-8x/source/verifier", features = ["std"] }
+
+[dev-dependencies]
+pci-dotf8 = { path = "../../dotf8" }

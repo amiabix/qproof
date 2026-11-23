@@ -1,0 +1,9 @@
+[package]
+name = "pci-dotf8"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# No dependencies: the dot_f8 precompile is reached through the `DotF8` trait,
+# implemented by the guest (syscall) and here in software for native runs.
+[dependencies]

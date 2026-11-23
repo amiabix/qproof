@@ -1,0 +1,9 @@
+[package]
+name = "pci-join-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+pci-receipts = { path = "../receipts" }
+ziskos = { workspace = true }

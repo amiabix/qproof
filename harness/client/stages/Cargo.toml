@@ -1,0 +1,16 @@
+[package]
+name = "pci-stages"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+pci-receipts = { path = "../../receipts" }
+pci-layer = { path = "../../layer" }
+qwen-common = { path = "../../../common" }
+
+[dev-dependencies]
+sha2 = "0.10.9"
+# Batch's canonical batched lossless kernel, read-only, tests only: checks it
+# is a valid drop-in head kernel (bit-identical shard receipts).
+pci-dotf8 = { path = "../../dotf8" }

@@ -1,0 +1,17 @@
+# Recursion probe (separate workspace: heavy GPU prover dependencies). Links the
+# pinned prover's zisk-sdk in place, read-only, with the same local
+# proofman-common patch that the pinned stack was built with.
+[package]
+name = "pci-aggregate-host"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+zisk-sdk = { path = "/home/abix/dot-f8-sm-20261120/gpu-final-8x/source/sdk" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[workspace]
+
+[patch.crates-io]
+proofman-common = { path = "/home/abix/dot-f8-sm-20261120/gpu-final-8x/proofman-common" }

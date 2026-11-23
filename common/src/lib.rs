@@ -784,3 +784,125 @@ mod tests {
         );
     }
 }
+
+/// Projections that share one input, in the order [`run_layer_batched`] claims them:
+/// 0 = q, k, v (input: input-normed x); 1 = o (attention output); 2 = gate, up
+/// (post-attention-normed x); 3 = down (SiLU(gate) * up).
+pub const BATCH_GROUPS: [&[usize]; 4] = [&[0, 1, 2], &[3], &[4, 5], &[6]];
+
+/// Fills `outs[k]` (`n_tok x rows`, row-major) with the product of matrix
+/// `BATCH_GROUPS[group][k]` and every row of `x` (`n_tok x cols`); called once per group,
+/// in order.
+pub type ClaimedBatch<'a> = &'a mut dyn FnMut(usize, &[f32], &mut [&mut [f32]]);
+
+/// The lossless layer (`flags` without `DOTF8`) of [`run_with`] with claimed products,
+/// reordered so each projection sees all positions at once. Every non-projection
+/// operation is the same code, per position, in the same order, so for bit-identical
+/// claimed products the output equals `run_with`'s bit for bit.
+pub fn run_layer_batched(input: &[u8], dot: DotFn, claimed: ClaimedBatch) -> Vec<f32> {
+    let h = Header::parse(input);
+    assert!(h.kind == LAYER, "batched run is for layers");
+    assert!(h.flags & DOTF8 == 0, "batched run is for the lossless profile");
+    let mut r = Reader {
+        bytes: input,
+        at: HEADER_BYTES,
+    };
+    let (dim, hd, n) = (h.dim, h.head_dim, h.n_tok);
+    let (qd, kvd) = (h.q_dim(), h.kv_dim());
+    let mut x = r.floats(n * dim).to_vec();
+    let input_ln = r.floats(dim);
+    let q_norm = r.floats(hd);
+    let k_norm = r.floats(hd);
+    let post_ln = r.floats(dim);
+
+    let inv_freq: Vec<f32> = (0..hd / 2)
+        .map(|i| 1.0 / libm::powf(h.rope_theta, (2 * i) as f32 / hd as f32))
+        .collect();
+    let scale = 1.0 / libm::sqrtf(hd as f32);
+    let mut xw = vec![0u64; dim.max(qd).max(h.hidden) / 2];
+    let mut xn = vec![0.0f32; n * dim];
+    let mut q = vec![0.0f32; n * qd];
+    let mut k = vec![0.0f32; n * kvd];
+    let mut v = vec![0.0f32; n * kvd];
+    let mut tmp = vec![0.0f32; hd];
+    let mut hw = vec![0u64; hd / 2];
+
+    for t in 0..n {
+        rmsnorm(dot, &mut xn[t * dim..][..dim], &x[t * dim..][..dim], input_ln, h.eps, &mut xw);
+    }
+    claimed(0, &xn, &mut [&mut q, &mut k, &mut v]);
+    for t in 0..n {
+        for (heads, weight, buf) in [
+            (h.heads, q_norm, &mut q[t * qd..][..qd]),
+            (h.kv_heads, k_norm, &mut k[t * kvd..][..kvd]),
+        ] {
+            for j in 0..heads {
+                let head = &mut buf[j * hd..][..hd];
+                tmp.copy_from_slice(head);
+                rmsnorm(dot, head, &tmp, weight, h.eps, &mut hw);
+                rope(head, t, &inv_freq);
+            }
+        }
+    }
+
+    let kw: Vec<u64> = {
+        let mut w = vec![0u64; n * kvd / 2];
+        pack(&k, &mut w);
+        w
+    };
+    let group = h.heads / h.kv_heads;
+    let mut att = vec![0.0f32; n];
+    let (mut aw, mut cw) = (vec![0u64; n.div_ceil(2)], vec![0u64; n.div_ceil(2)]);
+    let mut qw = vec![0u64; qd / 2];
+    let mut attn = vec![0.0f32; n * qd];
+    for t in 0..n {
+        pack(&q[t * qd..][..qd], &mut qw);
+        for j in 0..h.heads {
+            let kv = (j / group) * hd;
+            let a = &mut att[..t + 1];
+            for (s, score) in a.iter_mut().enumerate() {
+                *score = dot(
+                    &qw[j * hd / 2..][..hd / 2],
+                    &kw[(s * kvd + kv) / 2..][..hd / 2],
+                    hd,
+                ) * scale;
+            }
+            softmax(a);
+            pack(a, &mut aw);
+            for i in 0..hd {
+                let col = |s: usize| match s <= t {
+                    true => v[s * kvd + kv + i].to_bits() as u64,
+                    false => 0,
+                };
+                for (m, w) in cw[..(t + 1).div_ceil(2)].iter_mut().enumerate() {
+                    *w = col(2 * m) | col(2 * m + 1) << 32;
+                }
+                attn[t * qd + j * hd + i] = dot(&aw, &cw, t + 1);
+            }
+        }
+    }
+    drop((q, k, v, kw));
+
+    let mut o = vec![0.0f32; n * dim];
+    claimed(1, &attn, &mut [&mut o]);
+    drop(attn);
+    for t in 0..n {
+        let xt = &mut x[t * dim..][..dim];
+        for (a, &b) in xt.iter_mut().zip(&o[t * dim..][..dim]) {
+            *a += b;
+        }
+        rmsnorm(dot, &mut xn[t * dim..][..dim], xt, post_ln, h.eps, &mut xw);
+    }
+    let mut g = vec![0.0f32; n * h.hidden];
+    let mut u = vec![0.0f32; n * h.hidden];
+    claimed(2, &xn, &mut [&mut g, &mut u]);
+    for (a, &b) in g.iter_mut().zip(&u) {
+        *a = *a / (1.0 + libm::expf(-*a)) * b;
+    }
+    drop(u);
+    claimed(3, &g, &mut [&mut o]);
+    for (a, &b) in x.iter_mut().zip(&o) {
+        *a += b;
+    }
+    x
+}

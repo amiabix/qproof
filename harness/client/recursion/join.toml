@@ -1,0 +1,9 @@
+# ZisK recurser definition for the compact proof (zisk-sdk AggregationProgram,
+# 1.4.0-alpha, same schema as examples/recurser/hash/guest/aggregations/hash.toml).
+# Allow-list order fixes each program's programIndex: embed 0, layer 1, head 2.
+# STATUS: drafted, NOT set up or proven (see client.md, "Recursion").
+programs = ["pci-embed-guest", "pci-layer-guest", "pci-head-guest"]
+normalize-publics = "circuits/normalize.circom"
+aggregate-publics = "circuits/aggregate.circom"
+n-publics-agg = 5
+free-inputs = 0

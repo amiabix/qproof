@@ -1,5 +1,5 @@
 [workspace]
-members = ["common", "guest", "host", "elf", "sumcheck", "sumcheck-guest", "elf-verify"]
+members = ["common", "guest", "host", "elf", "sumcheck", "sumcheck-guest", "elf-verify", "harness/receipts", "harness/join-bench", "harness/layer", "harness/layer-guest", "harness/layer-host", "harness/dotf8", "harness/layer-bench"]
 resolver = "2"
 
 [workspace.dependencies]
